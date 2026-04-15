@@ -46,12 +46,17 @@ class HonoSseTransport {
 }
 
 class XiaoflowMcpServer {
-  private server: Server;
-  private axiosInstance;
   private transports = new Map<string, HonoSseTransport>();
 
   constructor() {
-    this.server = new Server(
+    // Shared state or configuration if needed
+  }
+
+  /**
+   * Creates and configures a new MCP Server instance for a specific session.
+   */
+  private createServerInstance(apiKey: string) {
+    const server = new Server(
       {
         name: "xiaoflow-mcp-server",
         version: "1.0.0",
@@ -63,28 +68,25 @@ class XiaoflowMcpServer {
       }
     );
 
-    this.axiosInstance = axios.create({
+    const axiosInstance = axios.create({
       baseURL: API_BASE_URL,
       headers: {
-        Authorization: `Bearer ${API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
     });
 
-    this.setupHandlers();
-    this.server.onerror = (error) => console.error("[MCP Error]", error);
+    this.setupHandlers(server, axiosInstance);
+    server.onerror = (error) => console.error("[MCP Session Error]", error);
+    return server;
   }
 
   /**
    * Defines the tools available to the MCP client.
-   * Maps to Xiaoflow Core SEO endpoints:
-   * - keyword discovery
-   * - url analysis
-   * - domain stats
-   * - keyword history
+   * Maps to Xiaoflow Core SEO endpoints.
    */
-  private setupHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  private setupHandlers(server: Server, axiosInstance: any) {
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
           name: "discover_keywords",
@@ -137,7 +139,7 @@ class XiaoflowMcpServer {
       ],
     }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       console.log(`[MCP Tool Call] ${name}`, args);
 
@@ -145,17 +147,17 @@ class XiaoflowMcpServer {
         switch (name) {
           case "discover_keywords":
           case "analyze_url": {
-            const response = await this.axiosInstance.get("/api/keywords", { params: args });
+            const response = await axiosInstance.get("/api/keywords", { params: args });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "get_domain_stats": {
             const { domain, ...params } = args as any;
-            const response = await this.axiosInstance.get(`/api/domains/${domain}`, { params });
+            const response = await axiosInstance.get(`/api/domains/${domain}`, { params });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "get_keyword_details": {
             const { slug, ...params } = args as any;
-            const response = await this.axiosInstance.get(`/api/keywords/${slug}`, { params });
+            const response = await axiosInstance.get(`/api/keywords/${slug}`, { params });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           default:
@@ -175,14 +177,20 @@ class XiaoflowMcpServer {
 
   public registerRoutes(app: Hono) {
     app.get("/sse", async (c) => {
+      const userKey = c.req.query("key") || c.req.query("apiKey") || API_KEY;
+      if (!userKey) {
+        return c.text("Unauthorized: No API context provided", 401);
+      }
+
       const sessionId = Math.random().toString(36).substring(2);
       const transport = new HonoSseTransport(sessionId);
       this.transports.set(sessionId, transport);
 
+      const serverSession = this.createServerInstance(userKey);
+
       return streamSSE(c, async (stream) => {
         transport.setStream(stream);
         
-        // Initial MCP endpoint announcement
         const url = new URL(c.req.url);
         const baseUrl = `${url.protocol}//${url.host}`;
         await stream.writeSSE({
@@ -190,14 +198,14 @@ class XiaoflowMcpServer {
           data: `${baseUrl}/messages?sessionId=${sessionId}`,
         });
 
-        await this.server.connect(transport as any);
+        await serverSession.connect(transport as any);
 
         stream.onAbort(() => {
+          this.transports.set(sessionId, transport); // Ensure cleanup logic knows session ended
           this.transports.delete(sessionId);
           transport.close();
         });
 
-        // Keep-alive loop
         while (this.transports.has(sessionId)) {
           await stream.sleep(20000);
           await stream.writeSSE({ comment: "keep-alive" });
@@ -217,21 +225,21 @@ class XiaoflowMcpServer {
   }
 
   async runStdio() {
+    if (!API_KEY) throw new Error("XIAOFLOW_API_KEY required for stdio mode");
+    const server = this.createServerInstance(API_KEY);
     const transport = new StdioServerTransport();
-    await this.server.connect(transport);
+    await server.connect(transport);
   }
 }
 
 const serverInstance = new XiaoflowMcpServer();
 const app = new Hono();
 
-app.get("/", (c) => c.text("Xiaoflow MCP Server is running"));
+app.get("/", (c) => c.text("Xiaoflow Authorized MCP Server is running"));
 
-// Export for Cloudflare Workers
 serverInstance.registerRoutes(app);
 export default app;
 
-// Fallback for local execution
 if (typeof process !== "undefined" && process.stdout?.isTTY) {
   serverInstance.runStdio().catch(console.error);
 }
