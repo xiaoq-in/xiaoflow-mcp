@@ -202,7 +202,7 @@ export class McpSession extends DurableObject {
           }
           case "get_keyword_details": {
             const { slug, ...params } = args as any;
-            const response = await axiosInstance.get(`/api/keywords/${slug}`, { params });
+            const response = await axiosInstance.get(`/api/keywords/${slug}/history`, { params });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           default:
