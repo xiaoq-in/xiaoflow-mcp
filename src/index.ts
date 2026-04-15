@@ -38,6 +38,7 @@ export class McpSession extends DurableObject {
     app.get("/sse", async (c) => {
       const apiKey = c.req.query("key") || this.env.XIAOFLOW_API_KEY;
       const sessionId = this.ctx.id.toString();
+      const externalBaseUrl = c.req.header("X-External-Base-Url");
       
       this.transport = new HonoSseTransport(sessionId);
       this.server = this.createServerInstance(apiKey);
@@ -45,9 +46,12 @@ export class McpSession extends DurableObject {
       return streamSSE(c, async (stream) => {
         this.transport?.setStream(stream);
         
+        // Use external base URL if provided, otherwise fallback to request URL
+        const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
+        
         await stream.writeSSE({
           event: "endpoint",
-          data: `${url.protocol}//${url.host}/messages?sessionId=${sessionId}`,
+          data: `${finalBaseUrl}/messages?sessionId=${sessionId}`,
         });
 
         if (this.server && this.transport) {
@@ -221,7 +225,15 @@ app.get("/sse", async (c) => {
   // Always create a new DO instance for a new SSE handshake
   const id = c.env.MCP_SESSION.newUniqueId();
   const obj = c.env.MCP_SESSION.get(id);
-  return obj.fetch(c.req.raw);
+  
+  // Extract public base URL and pass via header
+  const url = new URL(c.req.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  
+  const newRequest = new Request(c.req.raw);
+  newRequest.headers.set("X-External-Base-Url", baseUrl);
+  
+  return obj.fetch(newRequest);
 });
 
 app.post("/messages", async (c) => {
@@ -231,7 +243,15 @@ app.post("/messages", async (c) => {
   try {
     const id = c.env.MCP_SESSION.idFromString(sessionId);
     const obj = c.env.MCP_SESSION.get(id);
-    return obj.fetch(c.req.raw);
+    
+    // Pass public base URL for consistency
+    const url = new URL(c.req.url);
+    const baseUrl = `${url.protocol}//${url.host}`;
+    
+    const newRequest = new Request(c.req.raw);
+    newRequest.headers.set("X-External-Base-Url", baseUrl);
+    
+    return obj.fetch(newRequest);
   } catch (e) {
     return c.text("Invalid sessionId format", 400);
   }
