@@ -1,0 +1,27 @@
+{
+  "name": "xiaoflow-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Xiaoflow AI SEO Tools",
+  "main": "build/index.js",
+  "type": "module",
+  "bin": {
+    "xiaoflow-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js",
+    "dev": "tsc --watch",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@types/node": "^20.8.0",
+    "typescript": "^5.2.2",
+    "wrangler": "^3.91.0"
+  }
+}

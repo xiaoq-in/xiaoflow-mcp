@@ -1,0 +1,11 @@
+name = "xiaoflow-mcp"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = [ "nodejs_compat" ]
+
+workers_dev = true
+route = { pattern = "mcp.xiaoflow.com", custom_domain = true }
+
+[vars]
+XIAOFLOW_API_URL = "https://api.xiaoflow.com"
+# XIAOFLOW_API_KEY should be set via secrets: wrangler secret put XIAOFLOW_API_KEY
