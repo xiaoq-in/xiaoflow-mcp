@@ -8,68 +8,82 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
-import dotenv from "dotenv";
-
-dotenv.config();
-
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
+import { cors } from "hono/cors";
+import { DurableObject } from "cloudflare:workers";
 
-const API_KEY = process.env.XIAOFLOW_API_KEY;
-const API_BASE_URL = process.env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
+/**
+ * Durable Object that maintains a single stateful MCP server session.
+ * This ensures that follow-up /messages POSTs hit the same instance as the /sse GET.
+ */
+export class McpSession extends DurableObject {
+  private transport?: HonoSseTransport;
+  private server?: Server;
+  private env: any;
 
-// Simple transport bridge for Hono/Fetch environments
-class HonoSseTransport {
-  private stream?: any;
-  public onclose?: () => void;
-  public onerror?: (error: Error) => void;
-  public onmessage?: (message: any) => void;
-
-  constructor(private sessionId: string) {}
-
-  setStream(stream: any) {
-    this.stream = stream;
+  constructor(ctx: any, env: any) {
+    super(ctx, env);
+    this.env = env;
   }
 
-  async send(message: any) {
-    if (this.stream) {
-      await this.stream.writeSSE({
-        event: "message",
-        data: JSON.stringify(message),
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const app = new Hono<{ Bindings: any }>();
+
+    // Enable CORS for all DO requests
+    app.use("*", cors());
+
+    // SSE Handshake
+    app.get("/sse", async (c) => {
+      const apiKey = c.req.query("key") || this.env.XIAOFLOW_API_KEY;
+      const sessionId = this.ctx.id.toString();
+      
+      this.transport = new HonoSseTransport(sessionId);
+      this.server = this.createServerInstance(apiKey);
+
+      return streamSSE(c, async (stream) => {
+        this.transport?.setStream(stream);
+        
+        await stream.writeSSE({
+          event: "endpoint",
+          data: `${url.protocol}//${url.host}/messages?sessionId=${sessionId}`,
+        });
+
+        if (this.server && this.transport) {
+          await this.server.connect(this.transport as any);
+        }
+
+        // Keep-alive loop
+        while (true) {
+          await stream.sleep(20000);
+          await stream.writeSSE({ comment: "keep-alive" });
+        }
       });
-    }
+    });
+
+    // Message Input (POST from Cursor)
+    app.post("/messages", async (c) => {
+      if (!this.transport || !this.server) {
+        return c.text("Session not initialized in this instance", 410);
+      }
+
+      const message = await c.req.json();
+      this.transport.onmessage?.(message);
+      return c.text("OK");
+    });
+
+    return app.fetch(request);
   }
 
-  async close() {
-    this.onclose?.();
-  }
-}
-
-class XiaoflowMcpServer {
-  private transports = new Map<string, HonoSseTransport>();
-
-  constructor() {
-    // Shared state or configuration if needed
-  }
-
-  /**
-   * Creates and configures a new MCP Server instance for a specific session.
-   */
   private createServerInstance(apiKey: string) {
     const server = new Server(
-      {
-        name: "xiaoflow-mcp-server",
-        version: "1.0.0",
-      },
-      {
-        capabilities: {
-          tools: {},
-        },
-      }
+      { name: "xiaoflow-mcp-server", version: "1.1.0" },
+      { capabilities: { tools: {} } }
     );
 
     const axiosInstance = axios.create({
-      baseURL: API_BASE_URL,
+      baseURL: this.env.XIAOFLOW_API_URL || "https://api.xiaoflow.com",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -77,14 +91,10 @@ class XiaoflowMcpServer {
     });
 
     this.setupHandlers(server, axiosInstance);
-    server.onerror = (error) => console.error("[MCP Session Error]", error);
+    server.onerror = (error) => console.error("[DO MCP Session Error]", error);
     return server;
   }
 
-  /**
-   * Defines the tools available to the MCP client.
-   * Maps to Xiaoflow Core SEO endpoints.
-   */
   private setupHandlers(server: Server, axiosInstance: any) {
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
@@ -141,7 +151,7 @@ class XiaoflowMcpServer {
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      console.log(`[MCP Tool Call] ${name}`, args);
+      console.log(`[DO Toolbox] ${name}`, args);
 
       try {
         switch (name) {
@@ -165,8 +175,6 @@ class XiaoflowMcpServer {
         }
       } catch (error: any) {
         const errorMsg = error.response?.data?.message || error.message || "Unknown API error";
-        console.error(`[MCP Tool Error] ${name}:`, errorMsg);
-        
         return {
           content: [{ type: "text", text: `Xiaoflow API Error: ${errorMsg}` }],
           isError: true,
@@ -174,72 +182,59 @@ class XiaoflowMcpServer {
       }
     });
   }
+}
 
-  public registerRoutes(app: Hono) {
-    app.get("/sse", async (c) => {
-      const userKey = c.req.query("key") || c.req.query("apiKey") || API_KEY;
-      if (!userKey) {
-        return c.text("Unauthorized: No API context provided", 401);
-      }
+/**
+ * Simple transport bridge for Hono streaming
+ */
+class HonoSseTransport {
+  private stream?: any;
+  public onmessage?: (message: any) => void;
 
-      const sessionId = Math.random().toString(36).substring(2);
-      const transport = new HonoSseTransport(sessionId);
-      this.transports.set(sessionId, transport);
+  constructor(private sessionId: string) {}
 
-      const serverSession = this.createServerInstance(userKey);
+  setStream(stream: any) { this.stream = stream; }
 
-      return streamSSE(c, async (stream) => {
-        transport.setStream(stream);
-        
-        const url = new URL(c.req.url);
-        const baseUrl = `${url.protocol}//${url.host}`;
-        await stream.writeSSE({
-          event: "endpoint",
-          data: `${baseUrl}/messages?sessionId=${sessionId}`,
-        });
-
-        await serverSession.connect(transport as any);
-
-        stream.onAbort(() => {
-          this.transports.set(sessionId, transport); // Ensure cleanup logic knows session ended
-          this.transports.delete(sessionId);
-          transport.close();
-        });
-
-        while (this.transports.has(sessionId)) {
-          await stream.sleep(20000);
-          await stream.writeSSE({ comment: "keep-alive" });
-        }
+  async send(message: any) {
+    if (this.stream) {
+      await this.stream.writeSSE({
+        event: "message",
+        data: JSON.stringify(message),
       });
-    });
-
-    app.post("/messages", async (c) => {
-      const sessionId = c.req.query("sessionId");
-      const transport = this.transports.get(sessionId || "");
-      if (!transport) return c.text("Session not found", 404);
-
-      const message = await c.req.json();
-      transport.onmessage?.(message);
-      return c.text("OK");
-    });
+    }
   }
 
-  async runStdio() {
-    if (!API_KEY) throw new Error("XIAOFLOW_API_KEY required for stdio mode");
-    const server = this.createServerInstance(API_KEY);
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-  }
+  async close() {}
 }
 
-const serverInstance = new XiaoflowMcpServer();
-const app = new Hono();
+/**
+ * Main Worker Orchestrator
+ */
+const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
-app.get("/", (c) => c.text("Xiaoflow Authorized MCP Server is running"));
+// Global CORS Fix
+app.use("*", cors());
 
-serverInstance.registerRoutes(app);
+app.get("/", (c) => c.text("Xiaoflow MCP (Stateful) is running."));
+
+app.get("/sse", async (c) => {
+  // Always create a new DO instance for a new SSE handshake
+  const id = c.env.MCP_SESSION.newUniqueId();
+  const obj = c.env.MCP_SESSION.get(id);
+  return obj.fetch(c.req.raw);
+});
+
+app.post("/messages", async (c) => {
+  const sessionId = c.req.query("sessionId");
+  if (!sessionId) return c.text("Missing sessionId", 400);
+
+  try {
+    const id = c.env.MCP_SESSION.idFromString(sessionId);
+    const obj = c.env.MCP_SESSION.get(id);
+    return obj.fetch(c.req.raw);
+  } catch (e) {
+    return c.text("Invalid sessionId format", 400);
+  }
+});
+
 export default app;
-
-if (typeof process !== "undefined" && process.stdout?.isTTY) {
-  serverInstance.runStdio().catch(console.error);
-}
