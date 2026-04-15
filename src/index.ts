@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -9,13 +8,12 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
 import { cors } from "hono/cors";
 import { DurableObject } from "cloudflare:workers";
 
 /**
  * Durable Object that maintains a single stateful MCP server session.
- * This ensures that follow-up /messages POSTs hit the same instance as the /sse GET.
+ * Optimized for Raw Fetch performance and reliability within Cloudflare.
  */
 export class McpSession extends DurableObject {
   private transport?: HonoSseTransport;
@@ -29,60 +27,96 @@ export class McpSession extends DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const app = new Hono<{ Bindings: any }>();
+    const pathname = url.pathname;
+    const method = request.method;
 
-    // Enable CORS for all DO requests
-    app.use("*", cors());
+    console.log(`[DO ${this.ctx.id}] ${method} ${pathname}`);
+
+    // CORS Headers
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "*",
+    };
+
+    if (method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
 
     // SSE Handshake
-    app.get("/sse", async (c) => {
-      const apiKey = c.req.query("key") || this.env.XIAOFLOW_API_KEY;
+    if (pathname === "/sse" && method === "GET") {
+      const apiKey = url.searchParams.get("key") || this.env.XIAOFLOW_API_KEY;
       const sessionId = this.ctx.id.toString();
-      const externalBaseUrl = c.req.header("X-External-Base-Url");
+      const externalBaseUrl = request.headers.get("X-External-Base-Url");
       
       this.transport = new HonoSseTransport(sessionId);
       this.server = this.createServerInstance(apiKey);
 
-      return streamSSE(c, async (stream) => {
-        this.transport?.setStream(stream);
-        
-        // Use external base URL if provided, otherwise fallback to request URL
-        const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
-        
-        await stream.writeSSE({
-          event: "endpoint",
-          data: `${finalBaseUrl}/messages?sessionId=${sessionId}`,
-        });
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const encoder = new TextEncoder();
 
-        if (this.server && this.transport) {
-          await this.server.connect(this.transport as any);
-        }
+      // Setup the transport with a bridge to this stream
+      this.transport.setWriter(writer, encoder);
 
-        // Keep-alive loop
-        while (true) {
-          await stream.sleep(20000);
-          await stream.writeSSE({ comment: "keep-alive" });
+      const streamTask = async () => {
+        try {
+          // Immediately flush the endpoint info
+          const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
+          const endpointData = `event: endpoint\ndata: ${finalBaseUrl}/messages?sessionId=${sessionId}\n\n`;
+          await writer.write(encoder.encode(endpointData));
+
+          if (this.server && this.transport) {
+            await this.server.connect(this.transport as any);
+          }
+
+          // Keep-alive loop
+          while (true) {
+            await new Promise(resolve => setTimeout(resolve, 20000));
+            await writer.write(encoder.encode(": keep-alive\n\n"));
+          }
+        } catch (e) {
+          console.error("[DO Stream Error]", e);
+        } finally {
+          await writer.close();
         }
+      };
+
+      // Start the stream task without awaiting it to keep the fetch active
+      streamTask();
+
+      return new Response(readable, {
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          "X-Content-Type-Options": "nosniff",
+          "Connection": "keep-alive",
+        },
       });
-    });
+    }
 
     // Message Input (POST from Cursor)
-    app.post("/messages", async (c) => {
+    if (pathname === "/messages" && method === "POST") {
       if (!this.transport || !this.server) {
-        return c.text("Session not initialized in this instance", 410);
+        return new Response("Session not initialized", { status: 410, headers: corsHeaders });
       }
 
-      const message = await c.req.json();
-      this.transport.onmessage?.(message);
-      return c.text("OK");
-    });
+      try {
+        const message = await request.json();
+        this.transport.onmessage?.(message);
+        return new Response("OK", { headers: corsHeaders });
+      } catch (e) {
+        return new Response("Invalid JSON", { status: 400, headers: corsHeaders });
+      }
+    }
 
-    return app.fetch(request);
+    return new Response("Not Found", { status: 404, headers: corsHeaders });
   }
 
   private createServerInstance(apiKey: string) {
     const server = new Server(
-      { name: "xiaoflow-mcp-server", version: "1.1.0" },
+      { name: "xiaoflow-mcp-server", version: "1.2.0" },
       { capabilities: { tools: {} } }
     );
 
@@ -95,7 +129,6 @@ export class McpSession extends DurableObject {
     });
 
     this.setupHandlers(server, axiosInstance);
-    server.onerror = (error) => console.error("[DO MCP Session Error]", error);
     return server;
   }
 
@@ -155,8 +188,6 @@ export class McpSession extends DurableObject {
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-      console.log(`[DO Toolbox] ${name}`, args);
-
       try {
         switch (name) {
           case "discover_keywords":
@@ -189,22 +220,24 @@ export class McpSession extends DurableObject {
 }
 
 /**
- * Simple transport bridge for Hono streaming
+ * Optimized transport bridge for raw TransformStream
  */
 class HonoSseTransport {
-  private stream?: any;
+  private writer?: WritableStreamDefaultWriter<any>;
+  private encoder?: TextEncoder;
   public onmessage?: (message: any) => void;
 
   constructor(private sessionId: string) {}
 
-  setStream(stream: any) { this.stream = stream; }
+  setWriter(writer: WritableStreamDefaultWriter<any>, encoder: TextEncoder) {
+    this.writer = writer;
+    this.encoder = encoder;
+  }
 
   async send(message: any) {
-    if (this.stream) {
-      await this.stream.writeSSE({
-        event: "message",
-        data: JSON.stringify(message),
-      });
+    if (this.writer && this.encoder) {
+      const data = `event: message\ndata: ${JSON.stringify(message)}\n\n`;
+      await this.writer.write(this.encoder.encode(data));
     }
   }
 
@@ -216,45 +249,33 @@ class HonoSseTransport {
  */
 const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
-// Global CORS Fix
 app.use("*", cors());
 
-app.get("/", (c) => c.text("Xiaoflow MCP (Stateful) is running."));
+app.get("/", (c) => c.text("Xiaoflow MCP (DO Optimized) is running."));
 
-app.get("/sse", async (c) => {
-  // Always create a new DO instance for a new SSE handshake
-  const id = c.env.MCP_SESSION.newUniqueId();
+// Forwarding logic
+const forwardToDo = async (c: any) => {
+  const url = new URL(c.req.url);
+  let sessionId = url.searchParams.get("sessionId");
+  
+  let id;
+  if (sessionId) {
+    id = c.env.MCP_SESSION.idFromString(sessionId);
+  } else {
+    id = c.env.MCP_SESSION.newUniqueId();
+  }
+
   const obj = c.env.MCP_SESSION.get(id);
   
   // Extract public base URL and pass via header
-  const url = new URL(c.req.url);
   const baseUrl = `${url.protocol}//${url.host}`;
-  
   const newRequest = new Request(c.req.raw);
   newRequest.headers.set("X-External-Base-Url", baseUrl);
   
   return obj.fetch(newRequest);
-});
+};
 
-app.post("/messages", async (c) => {
-  const sessionId = c.req.query("sessionId");
-  if (!sessionId) return c.text("Missing sessionId", 400);
-
-  try {
-    const id = c.env.MCP_SESSION.idFromString(sessionId);
-    const obj = c.env.MCP_SESSION.get(id);
-    
-    // Pass public base URL for consistency
-    const url = new URL(c.req.url);
-    const baseUrl = `${url.protocol}//${url.host}`;
-    
-    const newRequest = new Request(c.req.raw);
-    newRequest.headers.set("X-External-Base-Url", baseUrl);
-    
-    return obj.fetch(newRequest);
-  } catch (e) {
-    return c.text("Invalid sessionId format", 400);
-  }
-});
+app.get("/sse", forwardToDo);
+app.post("/messages", forwardToDo);
 
 export default app;
