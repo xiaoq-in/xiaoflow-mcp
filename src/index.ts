@@ -98,9 +98,13 @@ export class McpSession extends DurableObject {
 
     // Handle POST probes (Common in Streamable HTTP fallbacks like Cursor)
     if (pathname === "/sse" && method === "POST") {
-      return new Response("Compatible with SSE. Please use GET for the stream.", { 
-        status: 200, 
-        headers: { ...corsHeaders, "Content-Type": "text/plain" } 
+      return new Response(JSON.stringify({ 
+        error: "Method Not Allowed", 
+        message: "This server supports SSE. Please use GET to initiate the stream.",
+        transport: "sse"
+      }), { 
+        status: 405, 
+        headers: { ...corsHeaders, "Content-Type": "application/json" } 
       });
     }
 
