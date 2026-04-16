@@ -112,6 +112,18 @@ export class McpSession extends DurableObject {
       }
     }
 
+    // Health Check / Diagnostics
+    if (pathname === "/health" || pathname === "/") {
+      return new Response(JSON.stringify({ 
+        status: "OK", 
+        sessionId: this.ctx.id.toString(),
+        mcpVersion: "1.2.2-DO",
+        timestamp: new Date().toISOString()
+      }), { 
+        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+      });
+    }
+
     return new Response(`MCP DO Route Not Found: ${method} ${pathname}`, { status: 404, headers: corsHeaders });
   }
 
@@ -255,7 +267,30 @@ const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
 app.use("*", cors());
 
-app.get("/", (c) => c.text("Xiaoflow MCP (DO Optimized) is running."));
+app.get("/", async (c) => {
+    // Health check that also probes the Durable Object
+    try {
+        const id = c.env.MCP_SESSION.newUniqueId();
+        const obj = c.env.MCP_SESSION.get(id);
+        const res = await obj.fetch(new Request("https://mcp.xiaoflow.com/health"));
+        const data: any = await res.json();
+        return c.json({
+            status: "Xiaoflow MCP is Online",
+            worker: "Online",
+            durableObject: "Active",
+            sessionId: data.sessionId,
+            instructions: "Connect to /sse?key=YOUR_KEY",
+            timestamp: new Date().toISOString()
+        });
+    } catch (err: any) {
+        return c.json({
+            status: "Xiaoflow MCP is partially Online",
+            worker: "Online",
+            durableObject: "Error",
+            message: err.message
+        }, 500);
+    }
+});
 
 // Forwarding logic
 const forwardToDo = async (c: any) => {
