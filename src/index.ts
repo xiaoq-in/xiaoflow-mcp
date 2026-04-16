@@ -33,17 +33,7 @@ export class McpSession extends DurableObject {
 
     console.log(`[DO ${this.ctx.id}] ${method} ${pathname} (Orig: ${url.pathname})`);
 
-    // Dynamic CORS for Claude.ai and others
-    const origin = request.headers.get("Origin");
-    const allowedOrigin = (origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com"))) ? origin : "*";
-
-    const corsHeaders: Record<string, string> = {
-      "Access-Control-Allow-Origin": allowedOrigin,
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-mcp-session-id",
-      "Access-Control-Expose-Headers": "Content-Type, x-mcp-session-id",
-      "Access-Control-Allow-Credentials": "true",
-    };
+    const corsHeaders = getCorsHeaders(request);
 
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
@@ -285,24 +275,28 @@ class HonoSseTransport {
 /**
  * Main Worker Orchestrator
  */
+const getCorsHeaders = (cOrReq: any) => {
+  const origin = (cOrReq instanceof Request) ? cOrReq.headers.get("Origin") : cOrReq.req.header("Origin");
+  const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com") || origin.endsWith("cursor.ai") || origin.endsWith("adore.workers.dev"));
+  const allowedOrigin = isAllowed ? origin : "*";
+
+  return {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-mcp-session-id",
+    "Access-Control-Expose-Headers": "Content-Type, x-mcp-session-id",
+    "Access-Control-Allow-Credentials": "true",
+  };
+};
+
+/**
+ * Main Worker Orchestrator
+ */
 const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
-// Custom Dynamic CORS for Claude and Cursor
-app.use("*", async (c, next) => {
-    const origin = c.req.header("Origin");
-    const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com"));
-    const allowedOrigin = isAllowed ? origin : "*";
-
-    await next();
-
-    c.res.headers.set("Access-Control-Allow-Origin", allowedOrigin);
-    c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    c.res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-mcp-session-id");
-    c.res.headers.set("Access-Control-Expose-Headers", "Content-Type, x-mcp-session-id");
-    c.res.headers.set("Access-Control-Allow-Credentials", "true");
+app.options("*", (c) => {
+    return c.text("", 204, getCorsHeaders(c));
 });
-
-app.options("*", (c) => c.text("", 204));
 
 app.get("/", async (c) => {
     // Health check that also probes the Durable Object
@@ -318,14 +312,14 @@ app.get("/", async (c) => {
             sessionId: data.sessionId,
             instructions: "Connect to /sse?key=YOUR_KEY",
             timestamp: new Date().toISOString()
-        });
+        }, 200, getCorsHeaders(c));
     } catch (err: any) {
         return c.json({
             status: "Xiaoflow MCP is partially Online",
             worker: "Online",
             durableObject: "Error",
             message: err.message
-        }, 500);
+        }, 500, getCorsHeaders(c));
     }
 });
 
