@@ -245,6 +245,23 @@ export class McpSession extends DurableObject {
             required: ["slug"],
           },
         },
+        {
+          name: "bulk_keyword_lookup",
+          description: "Get search volume and CPC metrics for a large list of keywords (up to 1,000).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              keywords: { 
+                type: "array", 
+                items: { type: "string" },
+                description: "List of keywords to analyze."
+              },
+              location: { type: "string", description: "Location ID (optional)." },
+              language: { type: "string", description: "Language code (optional)." },
+            },
+            required: ["keywords"],
+          },
+        },
       ],
     }));
 
@@ -265,6 +282,10 @@ export class McpSession extends DurableObject {
           case "get_keyword_details": {
             const { slug, ...params } = args as any;
             const response = await axiosInstance.get(`/api/keywords/${slug}/history`, { params });
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "bulk_keyword_lookup": {
+            const response = await axiosInstance.post("/api/keywords/bulk", args);
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           default:
