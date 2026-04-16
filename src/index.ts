@@ -35,7 +35,7 @@ export class McpSession extends DurableObject {
 
     const corsHeaders = getCorsHeaders(request);
 
-    if (method === "OPTIONS") {
+    if (method === "OPTIONS" || method === "HEAD") {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
@@ -77,9 +77,9 @@ export class McpSession extends DurableObject {
             await this.server.connect(this.transport as any);
           }
 
-          // Keep-alive loop
+          // Keep-alive loop (Aggressive 10s for IDE stability)
           while (true) {
-            await new Promise(resolve => setTimeout(resolve, 20000));
+            await new Promise(resolve => setTimeout(resolve, 10000));
             await writer.write(encoder.encode(": keep-alive\n\n"));
           }
         } catch (e) {
@@ -276,8 +276,15 @@ class HonoSseTransport {
  * Main Worker Orchestrator
  */
 const getCorsHeaders = (cOrReq: any) => {
-  const origin = (cOrReq instanceof Request) ? cOrReq.headers.get("Origin") : cOrReq.req.header("Origin");
-  const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com") || origin.endsWith("cursor.ai") || origin.endsWith("adore.workers.dev"));
+  // Defensive header extraction for Hono Context vs standard Request
+  let origin: string | null = null;
+  if (cOrReq instanceof Request) {
+    origin = cOrReq.headers.get("Origin");
+  } else if (cOrReq && cOrReq.req && typeof cOrReq.req.header === "function") {
+    origin = cOrReq.req.header("Origin");
+  }
+
+  const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com") || origin.endsWith("cursor.ai") || origin.endsWith("adore.workers.dev") || origin.endsWith("xiaoflow.com"));
   
   // SECURE CORS: Wildcard "*" + Credentials "true" is an invalid state rejected by modern browsers/IDEs.
   const allowedOrigin = isAllowed ? origin : "*";
@@ -293,16 +300,11 @@ const getCorsHeaders = (cOrReq: any) => {
 };
 
 /**
- * Main Worker Orchestrator
+ * Hono Orchestrator for secondary routes (Health, Diagnostics)
  */
 const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
-app.options("*", (c) => {
-    return c.text("", 204, getCorsHeaders(c));
-});
-
 app.get("/", async (c) => {
-    // Health check that also probes the Durable Object
     try {
         const id = c.env.MCP_SESSION.newUniqueId();
         const obj = c.env.MCP_SESSION.get(id);
@@ -310,47 +312,41 @@ app.get("/", async (c) => {
         const data: any = await res.json();
         return c.json({
             status: "Xiaoflow MCP is Online",
-            worker: "Online",
+            worker: "OnlineV2",
             durableObject: "Active",
             sessionId: data.sessionId,
             instructions: "Connect to /sse?key=YOUR_KEY",
             timestamp: new Date().toISOString()
         }, 200, getCorsHeaders(c));
     } catch (err: any) {
-        return c.json({
-            status: "Xiaoflow MCP is partially Online",
-            worker: "Online",
-            durableObject: "Error",
-            message: err.message
-        }, 500, getCorsHeaders(c));
+        return c.json({ status: "Error", message: err.message }, 500, getCorsHeaders(c));
     }
 });
+export default {
+    async fetch(request: Request, env: any, ctx: any): Promise<Response> {
+        const url = new URL(request.url);
+        const method = request.method;
+        const pathname = url.pathname.replace(/\/$/, "").toLowerCase() || "/";
 
-// Forwarding logic
-const forwardToDo = async (c: any) => {
-  const url = new URL(c.req.url);
-  let sessionId = url.searchParams.get("sessionId");
-  
-  let id;
-  if (sessionId) {
-    id = c.env.MCP_SESSION.idFromString(sessionId);
-  } else {
-    id = c.env.MCP_SESSION.newUniqueId();
-  }
+        // 1. Handle Core MCP Routes (/sse and /messages) directly to bypass Hono middleware
+        if (pathname === "/sse" || pathname === "/messages") {
+            const sessionId = url.searchParams.get("sessionId");
+            let id;
+            if (sessionId) {
+                try { id = env.MCP_SESSION.idFromString(sessionId); } catch { id = env.MCP_SESSION.newUniqueId(); }
+            } else {
+                id = env.MCP_SESSION.newUniqueId();
+            }
 
-  const obj = c.env.MCP_SESSION.get(id);
-  
-  // Extract public base URL and pass via header
-  const baseUrl = `${url.protocol}//${url.host}`;
-  const newRequest = new Request(c.req.raw);
-  newRequest.headers.set("X-External-Base-Url", baseUrl);
-  
-  return obj.fetch(newRequest);
+            const obj = env.MCP_SESSION.get(id);
+            const baseUrl = `${url.protocol}//${url.host}`;
+            const newRequest = new Request(request);
+            newRequest.headers.set("X-External-Base-Url", baseUrl);
+            
+            return obj.fetch(newRequest);
+        }
+
+        // 2. Pass everything else to the Hono app (Health checks, etc.)
+        return app.fetch(request, env, ctx);
+    }
 };
-
-app.get("/sse", forwardToDo);
-app.post("/messages", forwardToDo);
-app.options("/sse", forwardToDo);
-app.options("/messages", forwardToDo);
-
-export default app;
