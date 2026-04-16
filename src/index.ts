@@ -185,7 +185,8 @@ export class McpSession extends DurableObject {
         "Content-Type": "application/json",
       },
       params: {
-        expanded: "true"
+        expanded: "true",
+        limit: 1000
       }
     });
 
