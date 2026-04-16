@@ -8,7 +8,6 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { DurableObject } from "cloudflare:workers";
 
 /**
@@ -28,7 +27,6 @@ export class McpSession extends DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const method = request.method;
-    // Normalize path: ignore trailing slash and casing
     const pathname = url.pathname.replace(/\/$/, "").toLowerCase() || "/";
 
     console.log(`[DO ${this.ctx.id}] ${method} ${pathname} (Orig: ${url.pathname})`);
@@ -39,7 +37,7 @@ export class McpSession extends DurableObject {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // SSE Handshake
+    // SSE Handshake (GET)
     if (pathname === "/sse" && method === "GET") {
       const authHeader = request.headers.get("Authorization");
       let apiKey = url.searchParams.get("key");
@@ -50,7 +48,6 @@ export class McpSession extends DurableObject {
       
       apiKey = apiKey || this.env.XIAOFLOW_API_KEY;
       
-      // Persist apiKey in DO storage for session recovery
       if (apiKey) await this.ctx.storage.put("apiKey", apiKey);
 
       const sessionId = this.ctx.id.toString();
@@ -63,12 +60,10 @@ export class McpSession extends DurableObject {
       const writer = writable.getWriter();
       const encoder = new TextEncoder();
 
-      // Setup the transport with a bridge to this stream
       this.transport.setWriter(writer, encoder);
 
       const streamTask = async () => {
         try {
-          // Immediately flush the endpoint info
           const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
           const endpointData = `retry: 1000\nevent: endpoint\ndata: ${finalBaseUrl}/messages?sessionId=${sessionId}\n\n`;
           await writer.write(encoder.encode(endpointData));
@@ -77,7 +72,6 @@ export class McpSession extends DurableObject {
             await this.server.connect(this.transport as any);
           }
 
-          // Keep-alive loop (Aggressive 10s for IDE stability)
           while (true) {
             await new Promise(resolve => setTimeout(resolve, 10000));
             await writer.write(encoder.encode(": keep-alive\n\n"));
@@ -89,7 +83,6 @@ export class McpSession extends DurableObject {
         }
       };
 
-      // Start the stream task
       streamTask();
 
       return new Response(readable, {
@@ -103,14 +96,20 @@ export class McpSession extends DurableObject {
       });
     }
 
+    // Handle POST probes (Common in Streamable HTTP fallbacks like Cursor)
+    if (pathname === "/sse" && method === "POST") {
+      return new Response("Compatible with SSE. Please use GET for the stream.", { 
+        status: 200, 
+        headers: { ...corsHeaders, "Content-Type": "text/plain" } 
+      });
+    }
+
     // Message Input
     if (pathname === "/messages" && method === "POST") {
       if (!this.transport || !this.server) {
-        // Try to re-initialize from storage if possible (unlikely to fix streaming but better than nothing)
         const storedKey: string | undefined = await this.ctx.storage.get("apiKey");
         if (storedKey) {
             this.server = this.createServerInstance(storedKey);
-            // Note: transport remains disconnected from SSE stream, client needs to reconnect SSE
         }
         return new Response("Session state lost. Please reconnect SSE.", { status: 410, headers: corsHeaders });
       }
@@ -129,7 +128,7 @@ export class McpSession extends DurableObject {
       return new Response(JSON.stringify({ 
         status: "OK", 
         sessionId: this.ctx.id.toString(),
-        mcpVersion: "1.2.2-DO",
+        mcpVersion: "1.2.4-DO",
         timestamp: new Date().toISOString()
       }), { 
         headers: { ...corsHeaders, "Content-Type": "application/json" } 
@@ -152,7 +151,7 @@ export class McpSession extends DurableObject {
         "Content-Type": "application/json",
       },
       params: {
-        expanded: "true" // Always request human-readable JSON for MCP
+        expanded: "true"
       }
     });
 
@@ -247,9 +246,6 @@ export class McpSession extends DurableObject {
   }
 }
 
-/**
- * Optimized transport bridge for raw TransformStream
- */
 class HonoSseTransport {
   private writer?: WritableStreamDefaultWriter<any>;
   private encoder?: TextEncoder;
@@ -272,11 +268,7 @@ class HonoSseTransport {
   async close() {}
 }
 
-/**
- * Main Worker Orchestrator
- */
 const getCorsHeaders = (cOrReq: any) => {
-  // Defensive header extraction for Hono Context vs standard Request
   let origin: string | null = null;
   if (cOrReq instanceof Request) {
     origin = cOrReq.headers.get("Origin");
@@ -285,8 +277,6 @@ const getCorsHeaders = (cOrReq: any) => {
   }
 
   const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com") || origin.endsWith("cursor.ai") || origin.endsWith("adore.workers.dev") || origin.endsWith("xiaoflow.com"));
-  
-  // SECURE CORS: Wildcard "*" + Credentials "true" is an invalid state rejected by modern browsers/IDEs.
   const allowedOrigin = isAllowed ? origin : "*";
   const allowCredentials = isAllowed ? "true" : "false";
 
@@ -299,9 +289,6 @@ const getCorsHeaders = (cOrReq: any) => {
   };
 };
 
-/**
- * Hono Orchestrator for secondary routes (Health, Diagnostics)
- */
 const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
 app.get("/", async (c) => {
@@ -312,23 +299,23 @@ app.get("/", async (c) => {
         const data: any = await res.json();
         return c.json({
             status: "Xiaoflow MCP is Online",
-            worker: "OnlineV2",
+            worker: "OnlineV2.4",
             durableObject: "Active",
             sessionId: data.sessionId,
-            instructions: "Connect to /sse?key=YOUR_KEY",
+            instructions: "Connect to /sse",
             timestamp: new Date().toISOString()
         }, 200, getCorsHeaders(c));
     } catch (err: any) {
         return c.json({ status: "Error", message: err.message }, 500, getCorsHeaders(c));
     }
 });
+
 export default {
     async fetch(request: Request, env: any, ctx: any): Promise<Response> {
         const url = new URL(request.url);
         const method = request.method;
         const pathname = url.pathname.replace(/\/$/, "").toLowerCase() || "/";
 
-        // 1. Handle Core MCP Routes (/sse and /messages) directly to bypass Hono middleware
         if (pathname === "/sse" || pathname === "/messages") {
             const sessionId = url.searchParams.get("sessionId");
             let id;
@@ -346,7 +333,6 @@ export default {
             return obj.fetch(newRequest);
         }
 
-        // 2. Pass everything else to the Hono app (Health checks, etc.)
         return app.fetch(request, env, ctx);
     }
 };
