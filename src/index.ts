@@ -40,58 +40,78 @@ export class McpSession extends DurableObject {
     // SSE Handshake (GET)
     if (pathname === "/sse" && method === "GET") {
       const authHeader = request.headers.get("Authorization");
-      let apiKey = url.searchParams.get("key");
+      let apiKey = url.searchParams.get("key") || "";
       
       if (authHeader && authHeader.startsWith("Bearer ")) {
         apiKey = authHeader.substring(7);
       }
       
       apiKey = apiKey || this.env.XIAOFLOW_API_KEY;
-      
-      if (apiKey) await this.ctx.storage.put("apiKey", apiKey);
 
       const sessionId = this.ctx.id.toString();
       const externalBaseUrl = request.headers.get("X-External-Base-Url");
-      
+      const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
+
+      console.log(`[DO ${sessionId}] Handling SSE Handshake for key: ${apiKey?.substring(0, 8)}...`);
+
+      // 1. Initialize transport and server
       this.transport = new HonoSseTransport(sessionId);
       this.server = this.createServerInstance(apiKey);
 
-      const { readable, writable } = new TransformStream();
-      const writer = writable.getWriter();
       const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start: async (controller) => {
+          try {
+            // Set the controller for the transport to use
+            this.transport!.setController(controller, encoder);
 
-      this.transport.setWriter(writer, encoder);
+            // CRITICAL: Flush headers and initial packet immediately to prove connection is alive
+            controller.enqueue(encoder.encode(": ok\n\n"));
+            console.log(`[DO ${sessionId}] SSE Stream established, ok sent`);
 
-      const streamTask = async () => {
-        try {
-          const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
-          const endpointData = `retry: 1000\nevent: endpoint\ndata: ${finalBaseUrl}/messages?sessionId=${sessionId}\n\n`;
-          await writer.write(encoder.encode(endpointData));
+            // Send endpoint event - Absolute URL is safer
+            const messagesUrl = `${finalBaseUrl}/messages?sessionId=${sessionId}`;
+            const endpointData = `event: endpoint\ndata: ${messagesUrl}\n\n`;
+            controller.enqueue(encoder.encode(endpointData));
+            console.log(`[DO ${sessionId}] Endpoint event sent: ${messagesUrl}`);
 
-          if (this.server && this.transport) {
-            await this.server.connect(this.transport as any);
+            // Connect server to transport - This will call transport.start()
+            if (this.server && this.transport) {
+              await this.server.connect(this.transport as any);
+              console.log(`[DO ${sessionId}] MCP Server connected to transport`);
+            }
+
+            // Persistence
+            if (apiKey) this.ctx.storage.put("apiKey", apiKey);
+
+            // Keep-alive loop (Runs until stream is closed)
+            const intervalId = setInterval(() => {
+              try {
+                controller.enqueue(encoder.encode(": keep-alive\n\n"));
+              } catch (e) {
+                clearInterval(intervalId);
+              }
+            }, 10000);
+            
+          } catch (e) {
+            console.error(`[DO ${sessionId}] SSE Start Error:`, e);
+            controller.error(e);
           }
-
-          while (true) {
-            await new Promise(resolve => setTimeout(resolve, 10000));
-            await writer.write(encoder.encode(": keep-alive\n\n"));
-          }
-        } catch (e) {
-          console.error("[DO Stream Error]", e);
-        } finally {
-          try { await writer.close(); } catch {}
+        },
+        cancel: () => {
+          console.log(`[DO ${sessionId}] SSE Stream closed by client`);
+          this.transport = undefined;
         }
-      };
+      });
 
-      streamTask();
-
-      return new Response(readable, {
+      return new Response(stream, {
         headers: {
           ...corsHeaders,
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache, no-transform",
           "X-Content-Type-Options": "nosniff",
           "Connection": "keep-alive",
+          "X-Mcp-Session-Id": sessionId
         },
       });
     }
@@ -104,22 +124,32 @@ export class McpSession extends DurableObject {
         transport: "sse"
       }), { 
         status: 405, 
-        headers: { ...corsHeaders, "Content-Type": "application/json" } 
+        headers: { 
+            ...corsHeaders, 
+            "Content-Type": "application/json",
+            "Allow": "GET, OPTIONS"
+        } 
       });
     }
 
     // Message Input
     if (pathname === "/messages" && method === "POST") {
+      console.log(`[DO ${this.ctx.id}] Incoming message to /messages`);
       if (!this.transport || !this.server) {
+        console.warn(`[DO ${this.ctx.id}] Message received but no active transport/server`);
         const storedKey: string | undefined = await this.ctx.storage.get("apiKey");
         if (storedKey) {
             this.server = this.createServerInstance(storedKey);
         }
-        return new Response("Session state lost. Please reconnect SSE.", { status: 410, headers: corsHeaders });
+        return new Response("Session state lost. Please reconnect SSE.", { 
+            status: 410, 
+            headers: { ...corsHeaders, "Content-Type": "text/plain" } 
+        });
       }
 
       try {
         const message = await request.json();
+        console.log(`[DO ${this.ctx.id}] JSON-RPC Request: ${message.method || 'unknown'}`);
         this.transport.onmessage?.(message);
         return new Response("OK", { headers: corsHeaders });
       } catch (e) {
@@ -251,25 +281,42 @@ export class McpSession extends DurableObject {
 }
 
 class HonoSseTransport {
-  private writer?: WritableStreamDefaultWriter<any>;
+  private controller?: ReadableStreamDefaultController;
   private encoder?: TextEncoder;
   public onmessage?: (message: any) => void;
+  public onerror?: (error: Error) => void;
+  public onclose?: () => void;
 
   constructor(private sessionId: string) {}
 
-  setWriter(writer: WritableStreamDefaultWriter<any>, encoder: TextEncoder) {
-    this.writer = writer;
+  setController(controller: ReadableStreamDefaultController, encoder: TextEncoder) {
+    this.controller = controller;
     this.encoder = encoder;
   }
 
+  async start() {
+    console.log(`[DO ${this.sessionId}] [Transport] start() called`);
+  }
+
   async send(message: any) {
-    if (this.writer && this.encoder) {
+    if (this.controller && this.encoder) {
       const data = `event: message\ndata: ${JSON.stringify(message)}\n\n`;
-      await this.writer.write(this.encoder.encode(data));
+      try {
+        this.controller.enqueue(this.encoder.encode(data));
+        console.log(`[DO ${this.sessionId}] [Transport] Sent message: ${message.id || 'notify'}`);
+      } catch (e) {
+        console.error(`[DO ${this.sessionId}] [Transport] Error sending message:`, e);
+        this.onclose?.();
+      }
+    } else {
+        console.warn(`[DO ${this.sessionId}] [Transport] Attempted to send message but controller is missing`);
     }
   }
 
-  async close() {}
+  async close() {
+    console.log(`[DO ${this.sessionId}] [Transport] close() called`);
+    this.onclose?.();
+  }
 }
 
 const getCorsHeaders = (cOrReq: any) => {
@@ -321,7 +368,7 @@ export default {
         const pathname = url.pathname.replace(/\/$/, "").toLowerCase() || "/";
 
         if (pathname === "/sse" || pathname === "/messages") {
-            const sessionId = url.searchParams.get("sessionId");
+            const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id");
             let id;
             if (sessionId) {
                 try { id = env.MCP_SESSION.idFromString(sessionId); } catch { id = env.MCP_SESSION.newUniqueId(); }
