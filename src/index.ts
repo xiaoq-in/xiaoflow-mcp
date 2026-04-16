@@ -33,20 +33,36 @@ export class McpSession extends DurableObject {
 
     console.log(`[DO ${this.ctx.id}] ${method} ${pathname} (Orig: ${url.pathname})`);
 
-    // CORS Headers
-    const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
+    // Dynamic CORS for Claude.ai and others
+    const origin = request.headers.get("Origin");
+    const allowedOrigin = (origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com"))) ? origin : "*";
+
+    const corsHeaders: Record<string, string> = {
+      "Access-Control-Allow-Origin": allowedOrigin,
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, x-mcp-session-id",
+      "Access-Control-Expose-Headers": "Content-Type, x-mcp-session-id",
+      "Access-Control-Allow-Credentials": "true",
     };
 
     if (method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
     // SSE Handshake
     if (pathname === "/sse" && method === "GET") {
-      const apiKey = url.searchParams.get("key") || this.env.XIAOFLOW_API_KEY;
+      const authHeader = request.headers.get("Authorization");
+      let apiKey = url.searchParams.get("key");
+      
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        apiKey = authHeader.substring(7);
+      }
+      
+      apiKey = apiKey || this.env.XIAOFLOW_API_KEY;
+      
+      // Persist apiKey in DO storage for session recovery
+      if (apiKey) await this.ctx.storage.put("apiKey", apiKey);
+
       const sessionId = this.ctx.id.toString();
       const externalBaseUrl = request.headers.get("X-External-Base-Url");
       
@@ -64,7 +80,7 @@ export class McpSession extends DurableObject {
         try {
           // Immediately flush the endpoint info
           const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
-          const endpointData = `event: endpoint\ndata: ${finalBaseUrl}/messages?sessionId=${sessionId}\n\n`;
+          const endpointData = `retry: 1000\nevent: endpoint\ndata: ${finalBaseUrl}/messages?sessionId=${sessionId}\n\n`;
           await writer.write(encoder.encode(endpointData));
 
           if (this.server && this.transport) {
@@ -100,7 +116,13 @@ export class McpSession extends DurableObject {
     // Message Input
     if (pathname === "/messages" && method === "POST") {
       if (!this.transport || !this.server) {
-        return new Response("Session not initialized or expired", { status: 410, headers: corsHeaders });
+        // Try to re-initialize from storage if possible (unlikely to fix streaming but better than nothing)
+        const storedKey: string | undefined = await this.ctx.storage.get("apiKey");
+        if (storedKey) {
+            this.server = this.createServerInstance(storedKey);
+            // Note: transport remains disconnected from SSE stream, client needs to reconnect SSE
+        }
+        return new Response("Session state lost. Please reconnect SSE.", { status: 410, headers: corsHeaders });
       }
 
       try {
@@ -265,7 +287,22 @@ class HonoSseTransport {
  */
 const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
 
-app.use("*", cors());
+// Custom Dynamic CORS for Claude and Cursor
+app.use("*", async (c, next) => {
+    const origin = c.req.header("Origin");
+    const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com"));
+    const allowedOrigin = isAllowed ? origin : "*";
+
+    await next();
+
+    c.res.headers.set("Access-Control-Allow-Origin", allowedOrigin);
+    c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    c.res.headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-mcp-session-id");
+    c.res.headers.set("Access-Control-Expose-Headers", "Content-Type, x-mcp-session-id");
+    c.res.headers.set("Access-Control-Allow-Credentials", "true");
+});
+
+app.options("*", (c) => c.text("", 204));
 
 app.get("/", async (c) => {
     // Health check that also probes the Durable Object
@@ -316,5 +353,7 @@ const forwardToDo = async (c: any) => {
 
 app.get("/sse", forwardToDo);
 app.post("/messages", forwardToDo);
+app.options("/sse", forwardToDo);
+app.options("/messages", forwardToDo);
 
 export default app;
