@@ -278,14 +278,17 @@ class HonoSseTransport {
 const getCorsHeaders = (cOrReq: any) => {
   const origin = (cOrReq instanceof Request) ? cOrReq.headers.get("Origin") : cOrReq.req.header("Origin");
   const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com") || origin.endsWith("cursor.ai") || origin.endsWith("adore.workers.dev"));
+  
+  // SECURE CORS: Wildcard "*" + Credentials "true" is an invalid state rejected by modern browsers/IDEs.
   const allowedOrigin = isAllowed ? origin : "*";
+  const allowCredentials = isAllowed ? "true" : "false";
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization, x-mcp-session-id",
     "Access-Control-Expose-Headers": "Content-Type, x-mcp-session-id",
-    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Credentials": allowCredentials,
   };
 };
 
