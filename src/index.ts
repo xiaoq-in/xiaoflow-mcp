@@ -27,10 +27,11 @@ export class McpSession extends DurableObject {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const pathname = url.pathname;
     const method = request.method;
+    // Normalize path: ignore trailing slash and casing
+    const pathname = url.pathname.replace(/\/$/, "").toLowerCase() || "/";
 
-    console.log(`[DO ${this.ctx.id}] ${method} ${pathname}`);
+    console.log(`[DO ${this.ctx.id}] ${method} ${pathname} (Orig: ${url.pathname})`);
 
     // CORS Headers
     const corsHeaders = {
@@ -78,11 +79,11 @@ export class McpSession extends DurableObject {
         } catch (e) {
           console.error("[DO Stream Error]", e);
         } finally {
-          await writer.close();
+          try { await writer.close(); } catch {}
         }
       };
 
-      // Start the stream task without awaiting it to keep the fetch active
+      // Start the stream task
       streamTask();
 
       return new Response(readable, {
@@ -96,10 +97,10 @@ export class McpSession extends DurableObject {
       });
     }
 
-    // Message Input (POST from Cursor)
+    // Message Input
     if (pathname === "/messages" && method === "POST") {
       if (!this.transport || !this.server) {
-        return new Response("Session not initialized", { status: 410, headers: corsHeaders });
+        return new Response("Session not initialized or expired", { status: 410, headers: corsHeaders });
       }
 
       try {
@@ -111,12 +112,12 @@ export class McpSession extends DurableObject {
       }
     }
 
-    return new Response("Not Found", { status: 404, headers: corsHeaders });
+    return new Response(`MCP DO Route Not Found: ${method} ${pathname}`, { status: 404, headers: corsHeaders });
   }
 
   private createServerInstance(apiKey: string) {
     const server = new Server(
-      { name: "xiaoflow-mcp-server", version: "1.2.0" },
+      { name: "xiaoflow-mcp-server", version: "1.2.1" },
       { capabilities: { tools: {} } }
     );
 
@@ -126,6 +127,9 @@ export class McpSession extends DurableObject {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
+      params: {
+        expanded: "true" // Always request human-readable JSON for MCP
+      }
     });
 
     this.setupHandlers(server, axiosInstance);
