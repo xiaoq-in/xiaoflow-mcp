@@ -17,3 +17,6 @@ class_name = "McpSession"
 [[migrations]]
 tag = "v1"
 new_classes = ["McpSession"]
+
+[placement]
+region = "gcp:us-central1"
