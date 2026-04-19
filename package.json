@@ -1,7 +1,7 @@
 {
   "name": "xiaoflow-mcp-server",
   "version": "1.0.0",
-  "description": "MCP server for Xiaoflow AI SEO Tools",
+  "description": "MCP server for XiaoFlow AI SEO Tools",
   "main": "build/index.js",
   "type": "module",
   "bin": {

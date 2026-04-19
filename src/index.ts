@@ -294,7 +294,7 @@ export class McpSession extends DurableObject {
       } catch (error: any) {
         const errorMsg = error.response?.data?.message || error.message || "Unknown API error";
         return {
-          content: [{ type: "text", text: `Xiaoflow API Error: ${errorMsg}` }],
+          content: [{ type: "text", text: `XiaoFlow API Error: ${errorMsg}` }],
           isError: true,
         };
       }
@@ -371,7 +371,7 @@ app.get("/", async (c) => {
         const res = await obj.fetch(new Request("https://mcp.xiaoflow.com/health"));
         const data: any = await res.json();
         return c.json({
-            status: "Xiaoflow MCP is Online",
+            status: "XiaoFlow MCP is Online",
             worker: "OnlineV2.4",
             durableObject: "Active",
             sessionId: data.sessionId,

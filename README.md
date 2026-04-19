@@ -1,6 +1,6 @@
-# Xiaoflow MCP Server
+# XiaoFlow MCP Server
 
-Integrate Xiaoflow's powerful SEO and keyword analysis tools directly into your AI agents (like Claude Desktop) using the Model Context Protocol (MCP).
+Integrate XiaoFlow's powerful SEO and keyword analysis tools directly into your AI agents (like Claude Desktop) using the Model Context Protocol (MCP).
 
 ## Features
 
