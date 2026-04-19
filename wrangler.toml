@@ -19,5 +19,5 @@ tag = "v1"
 new_classes = ["McpSession"]
 
 [placement]
-mode = "smart"
+mode = "targeted"
 region = "gcp:us-central1"
