@@ -17,11 +17,11 @@ import { DurableObject } from "cloudflare:workers";
 export class McpSession extends DurableObject {
   private transport?: HonoSseTransport;
   private server?: Server;
-  private env: any;
+  private _env: any;
 
   constructor(ctx: any, env: any) {
     super(ctx, env);
-    this.env = env;
+    this._env = env;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -46,7 +46,7 @@ export class McpSession extends DurableObject {
         apiKey = authHeader.substring(7);
       }
       
-      apiKey = apiKey || this.env.XIAOFLOW_API_KEY;
+      apiKey = apiKey || this._env.XIAOFLOW_API_KEY;
 
       const sessionId = this.ctx.id.toString();
       const externalBaseUrl = request.headers.get("X-External-Base-Url");
@@ -148,7 +148,7 @@ export class McpSession extends DurableObject {
       }
 
       try {
-        const message = await request.json();
+        const message = await request.json() as any;
         console.log(`[DO ${this.ctx.id}] JSON-RPC Request: ${message.method || 'unknown'}`);
         this.transport.onmessage?.(message);
         return new Response("OK", { headers: corsHeaders });
@@ -179,7 +179,7 @@ export class McpSession extends DurableObject {
     );
 
     const axiosInstance = axios.create({
-      baseURL: this.env.XIAOFLOW_API_URL || "https://api.xiaoflow.com",
+      baseURL: this._env.XIAOFLOW_API_URL || "https://api.xiaoflow.com",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
@@ -199,27 +199,28 @@ export class McpSession extends DurableObject {
       tools: [
         {
           name: "discover_keywords",
-          description: "Generate keyword ideas and find high-potential keywords related to a seed keyword.",
+          description: "Generate keyword ideas and market intelligence from multi-vector seeds (keywords, domains, or specific URLs).",
           inputSchema: {
             type: "object",
             properties: {
-              keyword: { type: "string" },
-              location: { type: "string" },
-              language: { type: "string" },
+              keyword: { type: "string", description: "Primary search vector (e.g. 'wedding rings')." },
+              url: { type: "string", description: "Target individual page URL for landing page extraction." },
+              site: { type: "string", description: "Root domain or subdomain for full-site keyword mapping." },
+              location: { type: "string", description: "Geo-node ID or ISO code (e.g., 2840 or US)." },
+              language: { type: "string", description: "Language vector ID or code (e.g., 1000 or en)." },
             },
-            required: ["keyword"],
           },
         },
         {
           name: "analyze_url",
-          description: "Extract and analyze keywords from a specific URL.",
+          description: "Perform deep algorithmic extraction of organic keywords from a specific URL or domain.",
           inputSchema: {
             type: "object",
             properties: {
-              url: { type: "string" },
-              location: { type: "string" },
+              url: { type: "string", description: "Target URL to analyze." },
+              site: { type: "string", description: "Target domain to analyze." },
+              location: { type: "string", description: "Target country/region." },
             },
-            required: ["url"],
           },
         },
         {
@@ -349,9 +350,9 @@ const getCorsHeaders = (cOrReq: any) => {
     origin = cOrReq.req.header("Origin");
   }
 
-  const isAllowed = origin && (origin.endsWith("claude.ai") || origin.endsWith("cursor.com") || origin.endsWith("cursor.ai") || origin.endsWith("adore.workers.dev") || origin.endsWith("xiaoflow.com"));
-  const allowedOrigin = isAllowed ? origin : "*";
-  const allowCredentials = isAllowed ? "true" : "false";
+  const isAllowed = true;
+  const allowedOrigin = origin || "*";
+  const allowCredentials = "true";
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
