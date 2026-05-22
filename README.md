@@ -9,3 +9,17 @@
 | [`user-xiaoflow-etsy/`](./user-xiaoflow-etsy/README.md) | 仓库内可选用 stdio 实现（开发与高级场景）；产品上**不推荐**单独再配一层 GitHub/stdio Etsy 代理 — 请与 keyword MCP **同一套 SSE 流程**。 |
 
 远端 **`user-xiaoflow`** 若在单独仓库部署，仍按 Cursor 中的 **SSE** 配置即可。
+
+### API 映射（v1.3）
+
+| MCP 工具 | HTTP |
+|----------|------|
+| `discover_keywords` | `GET /api/keywords` |
+| `analyze_url`（`site`） | `GET /api/websites?site=&brand=0\|1` |
+| `analyze_url`（`url`） | `GET /api/keywords` |
+| `get_domain_stats` | `GET /api/websites/:domain?brand=0\|1` |
+| `list_domain_keywords` | `GET /api/websites/:domain/keywords?brand=0\|1` |
+
+`brand=0` 为站点域名关键词视图；`brand=1` 为品牌（keyword+url seed）视图。指标与 `t` 趋势均来自 MySQL；R2（`SEEDS`）仅存种子关联 slug 列表 `{s:[]}`。
+
+构建部署：`cd mcp && npm run build && npm run deploy`

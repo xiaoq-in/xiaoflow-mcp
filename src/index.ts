@@ -10,6 +10,29 @@ import axios from "axios";
 import { Hono } from "hono";
 import { DurableObject } from "cloudflare:workers";
 
+function brandQueryParam(brand: unknown): 0 | 1 {
+  if (brand === 1 || brand === "1" || brand === true) return 1;
+  return 0;
+}
+
+/** Map MCP tool args to API query params (location/language → backend getStandardParams). */
+function apiQueryParams(args: Record<string, unknown>): Record<string, unknown> {
+  const { brand, domain, site, keywords, ...rest } = args;
+  const params: Record<string, unknown> = { ...rest };
+  if (brand !== undefined) params.brand = brandQueryParam(brand);
+  return params;
+}
+
+function normalizeDomainInput(raw: string): string {
+  const s = raw.trim();
+  try {
+    if (s.includes("://")) return new URL(s).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    /* fall through */
+  }
+  return s.replace(/^www\./i, "").toLowerCase();
+}
+
 /**
  * Durable Object that maintains a single stateful MCP server session.
  * Optimized for Raw Fetch performance and reliability within Cloudflare.
@@ -162,7 +185,7 @@ export class McpSession extends DurableObject {
       return new Response(JSON.stringify({ 
         status: "OK", 
         sessionId: this.ctx.id.toString(),
-        mcpVersion: "1.2.4-DO",
+        mcpVersion: "1.3.0-DO",
         timestamp: new Date().toISOString()
       }), { 
         headers: { ...corsHeaders, "Content-Type": "application/json" } 
@@ -174,7 +197,7 @@ export class McpSession extends DurableObject {
 
   private createServerInstance(apiKey: string) {
     const server = new Server(
-      { name: "xiaoflow-mcp-server", version: "1.2.1" },
+      { name: "xiaoflow-mcp-server", version: "1.3.0" },
       { capabilities: { tools: {} } }
     );
 
@@ -199,56 +222,79 @@ export class McpSession extends DurableObject {
       tools: [
         {
           name: "discover_keywords",
-          description: "Generate keyword ideas and market intelligence from multi-vector seeds (keywords, domains, or specific URLs).",
+          description: "Generate keyword ideas from keyword, URL, or domain seeds (Google Ads discovery).",
           inputSchema: {
             type: "object",
             properties: {
-              keyword: { type: "string", description: "Primary search vector (e.g. 'wedding rings')." },
-              url: { type: "string", description: "Target individual page URL for landing page extraction." },
-              site: { type: "string", description: "Root domain or subdomain for full-site keyword mapping." },
-              location: { type: "string", description: "Geo-node ID or ISO code (e.g., 2840 or US)." },
-              language: { type: "string", description: "Language vector ID or code (e.g., 1000 or en)." },
+              keyword: { type: "string", description: "Primary keyword seed." },
+              url: { type: "string", description: "Page URL seed." },
+              site: { type: "string", description: "Root domain seed." },
+              location: { type: "string", description: "Geo ID or ISO (e.g. 2840 or US)." },
+              language: { type: "string", description: "Language ID or code (e.g. 1000 or en)." },
             },
           },
         },
         {
           name: "analyze_url",
-          description: "Perform deep algorithmic extraction of organic keywords from a specific URL or domain.",
+          description: "Domain/site keyword discovery via /api/websites (requires brand=0|1). Use site for full domain mapping; use url for a single page via /api/keywords.",
           inputSchema: {
             type: "object",
             properties: {
-              url: { type: "string", description: "Target URL to analyze." },
-              site: { type: "string", description: "Target domain to analyze." },
-              location: { type: "string", description: "Target country/region." },
+              url: { type: "string", description: "Single page URL (uses /api/keywords)." },
+              site: { type: "string", description: "Domain for /api/websites discovery." },
+              brand: { type: "integer", enum: [0, 1], description: "0=domain keywords, 1=brand keywords (required with site)." },
+              location: { type: "string", description: "Geo ID or ISO." },
+              language: { type: "string", description: "Language ID or code." },
             },
           },
         },
         {
           name: "get_domain_stats",
-          description: "Get SEO metrics (traffic, keywords) for a specific domain.",
+          description: "Website overview metrics and traffic history. GET /api/websites/:domain?brand=0|1",
+          inputSchema: {
+            type: "object",
+            properties: {
+              domain: { type: "string", description: "Domain (e.g. example.com)." },
+              brand: { type: "integer", enum: [0, 1], description: "0=domain overview, 1=brand overview." },
+              location: { type: "string", description: "Geo ID or ISO." },
+              language: { type: "string", description: "Language ID or code." },
+            },
+            required: ["domain", "brand"],
+          },
+        },
+        {
+          name: "list_domain_keywords",
+          description: "Paginated keyword list for a domain. GET /api/websites/:domain/keywords?brand=0|1",
           inputSchema: {
             type: "object",
             properties: {
               domain: { type: "string" },
+              brand: { type: "integer", enum: [0, 1] },
+              location: { type: "string" },
+              language: { type: "string" },
+              page: { type: "integer" },
+              page_size: { type: "integer" },
             },
-            required: ["domain"],
+            required: ["domain", "brand"],
           },
         },
         {
           name: "get_keyword_details",
-          description: "Get detailed historical data for a specific keyword slug.",
+          description: "Historical volume for a keyword slug.",
           inputSchema: {
             type: "object",
             properties: {
               slug: { type: "string" },
               time_range: { type: "string", enum: ["12m", "24m", "48m"] },
+              location: { type: "string" },
+              language: { type: "string" },
             },
             required: ["slug"],
           },
         },
         {
           name: "bulk_keyword_lookup",
-          description: "Get search volume and CPC metrics for a large list of keywords (up to 1,000).",
+          description: "Bulk volume/CPC for up to 1,000 keywords.",
           inputSchema: {
             type: "object",
             properties: {
@@ -257,8 +303,8 @@ export class McpSession extends DurableObject {
                 items: { type: "string" },
                 description: "List of keywords to analyze."
               },
-              location: { type: "string", description: "Location ID (optional)." },
-              language: { type: "string", description: "Language code (optional)." },
+              location: { type: "string" },
+              language: { type: "string" },
             },
             required: ["keywords"],
           },
@@ -268,32 +314,74 @@ export class McpSession extends DurableObject {
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
+      const toolArgs = (args || {}) as Record<string, unknown>;
       try {
         switch (name) {
-          case "discover_keywords":
+          case "discover_keywords": {
+            const response = await axiosInstance.get("/api/keywords", {
+              params: apiQueryParams(toolArgs),
+            });
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
           case "analyze_url": {
-            const response = await axiosInstance.get("/api/keywords", { params: args });
+            const site = String(toolArgs.site || "").trim();
+            const url = String(toolArgs.url || "").trim();
+            if (site && !url) {
+              const domain = normalizeDomainInput(site);
+              const params = apiQueryParams(toolArgs);
+              if (params.brand === undefined) params.brand = 0;
+              const response = await axiosInstance.get("/api/websites", {
+                params: { ...params, site: domain },
+              });
+              return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+            }
+            const response = await axiosInstance.get("/api/keywords", {
+              params: apiQueryParams(toolArgs),
+            });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "get_domain_stats": {
-            const { domain, ...params } = args as any;
-            const response = await axiosInstance.get(`/api/domains/${domain}`, { params });
+            const domain = normalizeDomainInput(String(toolArgs.domain || ""));
+            const params = apiQueryParams(toolArgs);
+            if (params.brand === undefined) {
+              throw new McpError(ErrorCode.InvalidParams, "brand is required (0 or 1)");
+            }
+            const response = await axiosInstance.get(
+              `/api/websites/${encodeURIComponent(domain)}`,
+              { params }
+            );
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "list_domain_keywords": {
+            const domain = normalizeDomainInput(String(toolArgs.domain || ""));
+            const params = apiQueryParams(toolArgs);
+            if (params.brand === undefined) {
+              throw new McpError(ErrorCode.InvalidParams, "brand is required (0 or 1)");
+            }
+            const response = await axiosInstance.get(
+              `/api/websites/${encodeURIComponent(domain)}/keywords`,
+              { params }
+            );
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "get_keyword_details": {
-            const { slug, ...params } = args as any;
-            const response = await axiosInstance.get(`/api/keywords/${slug}/history`, { params });
+            const { slug, ...rest } = toolArgs;
+            const response = await axiosInstance.get(
+              `/api/keywords/${encodeURIComponent(String(slug))}/history`,
+              { params: apiQueryParams(rest) }
+            );
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "bulk_keyword_lookup": {
-            const response = await axiosInstance.post("/api/keywords/bulk", args);
+            const response = await axiosInstance.post("/api/keywords/bulk", toolArgs);
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
         }
       } catch (error: any) {
-        const errorMsg = error.response?.data?.message || error.message || "Unknown API error";
+        if (error instanceof McpError) throw error;
+        const errorMsg = error.response?.data?.message || error.response?.data?.error || error.message || "Unknown API error";
         return {
           content: [{ type: "text", text: `XiaoFlow API Error: ${errorMsg}` }],
           isError: true,
