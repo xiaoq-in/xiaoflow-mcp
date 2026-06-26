@@ -1,11 +1,11 @@
 /**
- * Xiaoflow Worker routes under `/api/etsy` (+ linked `/api/user/etsy`).
+ * Xiaoflow Worker routes under `/api/v1/etsy` (+ linked `/api/v1/user/etsy`).
  * Keep in sync with `backend/src/routes/etsy.ts` and `backend/src/routes/user/etsy.ts`.
  */
 export interface RouteCatalogEntry {
     /** HTTP method */
     method: 'GET' | 'POST';
-    /** Path segment after `/api/etsy/` (omit leading slash). */
+    /** Path segment after `/api/v1/etsy/` (omit leading slash). */
     path: string;
     /** Human-readable summary */
     description: string;

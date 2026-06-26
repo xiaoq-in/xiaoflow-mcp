@@ -236,12 +236,12 @@ export class McpSession extends DurableObject {
         },
         {
           name: "analyze_url",
-          description: "Domain/site keyword discovery via /api/websites (requires brand=0|1). Use site for full domain mapping; use url for a single page via /api/keywords.",
+          description: "Domain/site keyword discovery via /api/v1/websites (requires brand=0|1). Use site for full domain mapping; use url for a single page via /api/v1/keywords.",
           inputSchema: {
             type: "object",
             properties: {
-              url: { type: "string", description: "Single page URL (uses /api/keywords)." },
-              site: { type: "string", description: "Domain for /api/websites discovery." },
+              url: { type: "string", description: "Single page URL (uses /api/v1/keywords)." },
+              site: { type: "string", description: "Domain for /api/v1/websites discovery." },
               brand: { type: "integer", enum: [0, 1], description: "0=domain keywords, 1=brand keywords (required with site)." },
               location: { type: "string", description: "Geo ID or ISO." },
               language: { type: "string", description: "Language ID or code." },
@@ -250,7 +250,7 @@ export class McpSession extends DurableObject {
         },
         {
           name: "get_domain_stats",
-          description: "Website overview metrics and traffic history. GET /api/websites/:domain?brand=0|1",
+          description: "Website overview metrics and traffic history. GET /api/v1/websites/:domain?brand=0|1",
           inputSchema: {
             type: "object",
             properties: {
@@ -264,7 +264,7 @@ export class McpSession extends DurableObject {
         },
         {
           name: "list_domain_keywords",
-          description: "Paginated keyword list for a domain. GET /api/websites/:domain/keywords?brand=0|1",
+          description: "Paginated keyword list for a domain. GET /api/v1/websites/:domain/keywords?brand=0|1",
           inputSchema: {
             type: "object",
             properties: {
@@ -318,7 +318,7 @@ export class McpSession extends DurableObject {
       try {
         switch (name) {
           case "discover_keywords": {
-            const response = await axiosInstance.get("/api/keywords", {
+            const response = await axiosInstance.get("/api/v1/keywords", {
               params: apiQueryParams(toolArgs),
             });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
@@ -330,12 +330,12 @@ export class McpSession extends DurableObject {
               const domain = normalizeDomainInput(site);
               const params = apiQueryParams(toolArgs);
               if (params.brand === undefined) params.brand = 0;
-              const response = await axiosInstance.get("/api/websites", {
+              const response = await axiosInstance.get("/api/v1/websites", {
                 params: { ...params, site: domain },
               });
               return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
             }
-            const response = await axiosInstance.get("/api/keywords", {
+            const response = await axiosInstance.get("/api/v1/keywords", {
               params: apiQueryParams(toolArgs),
             });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
@@ -347,7 +347,7 @@ export class McpSession extends DurableObject {
               throw new McpError(ErrorCode.InvalidParams, "brand is required (0 or 1)");
             }
             const response = await axiosInstance.get(
-              `/api/websites/${encodeURIComponent(domain)}`,
+              `/api/v1/websites/${encodeURIComponent(domain)}`,
               { params }
             );
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
@@ -359,7 +359,7 @@ export class McpSession extends DurableObject {
               throw new McpError(ErrorCode.InvalidParams, "brand is required (0 or 1)");
             }
             const response = await axiosInstance.get(
-              `/api/websites/${encodeURIComponent(domain)}/keywords`,
+              `/api/v1/websites/${encodeURIComponent(domain)}/keywords`,
               { params }
             );
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
@@ -367,13 +367,13 @@ export class McpSession extends DurableObject {
           case "get_keyword_details": {
             const { slug, ...rest } = toolArgs;
             const response = await axiosInstance.get(
-              `/api/keywords/${encodeURIComponent(String(slug))}/history`,
+              `/api/v1/keywords/${encodeURIComponent(String(slug))}/history`,
               { params: apiQueryParams(rest) }
             );
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "bulk_keyword_lookup": {
-            const response = await axiosInstance.post("/api/keywords/bulk", toolArgs);
+            const response = await axiosInstance.post("/api/v1/keywords/bulk", toolArgs);
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           default:

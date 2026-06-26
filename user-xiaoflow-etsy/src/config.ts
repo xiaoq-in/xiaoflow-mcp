@@ -29,7 +29,7 @@ export function hasAnyAuthConfigured(): boolean {
 
 export function mcServerInstructions(): string {
     return [
-        'Xiaoflow Worker proxy for REST /api/etsy/* and GET /api/user/etsy/insight.',
+        'Xiaoflow Worker proxy for REST /api/v1/etsy/* and GET /api/v1/user/etsy/insight.',
         'Tools: xiaoflow_etsy_route_catalog (static docs), xiaoflow_etsy_http (GET/POST), xiaoflow_user_etsy_insight.',
         'Set XIAOFLOW_AUTH_TOKEN (Bearer / api token) or XIAOFLOW_INTERNAL_SECRET (INTERNAL_API_SECRET).',
         `Optional: XIAOFLOW_API_BASE (default ${apiBaseOrigin()}), XIAOFLOW_TRUSTED_ORIGIN.`,

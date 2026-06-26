@@ -22,7 +22,7 @@ function normalizeEtsyPath(pathInput: string): string {
     if (pathOnly.startsWith('api/etsy')) {
         return `/${pathOnly}${qs}`;
     }
-    return `/api/etsy/${pathOnly}${qs}`;
+    return `/api/v1/etsy/${pathOnly}${qs}`;
 }
 
 function mergeQuery(url: URL, extra: Record<string, unknown>): void {
@@ -97,7 +97,7 @@ mcpServer.registerTool(
     'xiaoflow_etsy_route_catalog',
     {
         description:
-            'Static JSON catalog for every Xiaoflow `/api/etsy/*` Worker route (method, relative path segment, typical query keys, POST bodies). Matches `backend/src/routes/etsy.ts`.',
+            'Static JSON catalog for every Xiaoflow `/api/v1/etsy/*` Worker route (method, relative path segment, typical query keys, POST bodies). Matches `backend/src/routes/etsy.ts`.',
     },
     async () => ({
         content: [{ type: 'text', text: JSON.stringify({ routes: ETSY_ROUTE_CATALOG }, null, 2) }],
@@ -107,15 +107,15 @@ mcpServer.registerTool(
 mcpServer.registerTool(
     'xiaoflow_etsy_http',
     {
-        title: 'Proxy /api/etsy',
+        title: 'Proxy /api/v1/etsy',
         description:
-            'HTTP proxy for Xiaoflow `/api/etsy/*`. Uses `Authorization: Bearer` when `XIAOFLOW_AUTH_TOKEN` is set (JWT or api token from `auth_tokens`), or `XIAOFLOW_INTERNAL_SECRET` for Worker internal role. Sends first-party Origin and `X-Requested-With: XMLHttpRequest`.',
+            'HTTP proxy for Xiaoflow `/api/v1/etsy/*`. Uses `Authorization: Bearer` when `XIAOFLOW_AUTH_TOKEN` is set (JWT or api token from `auth_tokens`), or `XIAOFLOW_INTERNAL_SECRET` for Worker internal role. Sends first-party Origin and `X-Requested-With: XMLHttpRequest`.',
         inputSchema: {
             method: z.enum(['GET', 'POST']).describe('HTTP verb'),
             path: z
                 .string()
                 .describe(
-                    'Examples: `shop`, `listing?query=…`, `listing/reviews?listing_id=…`, `buyer/999` — path segments after `/api/etsy/`.',
+                    'Examples: `shop`, `listing?query=…`, `listing/reviews?listing_id=…`, `buyer/999` — path segments after `/api/v1/etsy/`.',
                 ),
             query: z
                 .record(z.string(), z.unknown())
@@ -145,17 +145,17 @@ mcpServer.registerTool(
 mcpServer.registerTool(
     'xiaoflow_user_etsy_insight',
     {
-        title: 'GET /api/user/etsy/insight',
+        title: 'GET /api/v1/user/etsy/insight',
         description:
             'Linked seller snapshot (shop + receipts + listings). Same auth as Worker REST; requires Etsy OAuth linked user when using Bearer.',
     },
     async () => {
         try {
-            const res = await fetchBackend('/api/user/etsy/insight', { method: 'GET' });
+            const res = await fetchBackend('/api/v1/user/etsy/insight', { method: 'GET' });
             const raw = await res.text();
             const disp = await parseBodyDisplay(raw, res.headers.get('content-type'));
             return {
-                content: [{ type: 'text', text: `[GET /api/user/etsy/insight] HTTP ${res.status}\n\n${disp}` }],
+                content: [{ type: 'text', text: `[GET /api/v1/user/etsy/insight] HTTP ${res.status}\n\n${disp}` }],
                 isError: !res.ok,
             };
         } catch (err: unknown) {
