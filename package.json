@@ -1,6 +1,6 @@
 {
   "name": "xiaoflow-mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Official MCP server for XiaoFlow AI SEO Tools and Etsy Keyword Analytics",
   "main": "build/index.js",
   "type": "module",
