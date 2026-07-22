@@ -1,18 +1,42 @@
 {
   "name": "xiaoflow-mcp-server",
   "version": "1.0.0",
-  "description": "MCP server for XiaoFlow AI SEO Tools",
+  "description": "Official MCP server for XiaoFlow AI SEO Tools and Etsy Keyword Analytics",
   "main": "build/index.js",
   "type": "module",
   "bin": {
-    "xiaoflow-mcp": "./build/index.js"
+    "xiaoflow-mcp-server": "build/index.js",
+    "xiaoflow-mcp": "build/index.js"
   },
+  "files": [
+    "build",
+    "README.md",
+    "smithery.yaml"
+  ],
   "scripts": {
     "build": "tsc",
     "start": "node build/index.js",
     "dev": "tsc --watch",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "prepublishOnly": "npm run build"
   },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "mcp-server",
+    "xiaoflow",
+    "seo",
+    "keyword-research",
+    "etsy-seo",
+    "ai-tools"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiaoq-in/xiaoflow-mcp.git"
+  },
+  "homepage": "https://www.xiaoflow.com/mcp",
+  "author": "XiaoFlow Team <contact@xiaoflow.com>",
+  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1",
     "axios": "^1.6.0",

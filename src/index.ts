@@ -139,18 +139,19 @@ export class McpSession extends DurableObject {
       });
     }
 
-    // Handle POST probes (Common in Streamable HTTP fallbacks like Cursor)
+    // Handle POST probes (Common in Streamable HTTP fallbacks like Cursor & Smithery)
     if (pathname === "/sse" && method === "POST") {
       return new Response(JSON.stringify({ 
-        error: "Method Not Allowed", 
-        message: "This server supports SSE. Please use GET to initiate the stream.",
-        transport: "sse"
+        status: "ok", 
+        message: "This server supports SSE. Please use GET /sse to initiate the stream.",
+        transport: "sse",
+        endpoint: "/sse"
       }), { 
-        status: 405, 
+        status: 200, 
         headers: { 
             ...corsHeaders, 
             "Content-Type": "application/json",
-            "Allow": "GET, OPTIONS"
+            "Allow": "GET, POST, OPTIONS"
         } 
       });
     }
@@ -452,6 +453,137 @@ const getCorsHeaders = (cOrReq: any) => {
 };
 
 const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
+
+app.get("/.well-known/mcp/server-card.json", (c) => {
+  const url = new URL(c.req.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  return c.json({
+    "$schema": "https://smithery.ai/server-card-schema.json",
+    "name": "xiaoflow-mcp-server",
+    "description": "XiaoFlow AI SEO Tools and Etsy Keyword Analytics MCP Server",
+    "version": "1.3.0",
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": {}
+    },
+    "transport": {
+      "type": "sse",
+      "endpoint": `${baseUrl}/sse`
+    },
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "type": "string",
+          "description": "Your XiaoFlow API Key (from https://www.xiaoflow.com/user/api-keys)"
+        }
+      },
+      "required": ["apiKey"]
+    },
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "description": "Authorize by logging into your XiaoFlow.com account",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": `${baseUrl}/oauth/authorize`,
+            "tokenUrl": `${baseUrl}/oauth/token`,
+            "scopes": {}
+          }
+        }
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API_KEY",
+        "description": "Provide your XiaoFlow API key as a Bearer token or in the SSE URL query ?key=YOUR_API_KEY"
+      }
+    }
+  }, 200, getCorsHeaders(c));
+});
+
+app.get("/.well-known/mcp-server-card.json", (c) => {
+  const url = new URL(c.req.url);
+  const baseUrl = `${url.protocol}//${url.host}`;
+  return c.json({
+    "$schema": "https://smithery.ai/server-card-schema.json",
+    "name": "xiaoflow-mcp-server",
+    "description": "XiaoFlow AI SEO Tools and Etsy Keyword Analytics MCP Server",
+    "version": "1.3.0",
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "tools": {}
+    },
+    "transport": {
+      "type": "sse",
+      "endpoint": `${baseUrl}/sse`
+    },
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "apiKey": {
+          "type": "string",
+          "description": "Your XiaoFlow API Key (from https://www.xiaoflow.com/user/api-keys)"
+        }
+      },
+      "required": ["apiKey"]
+    },
+    "securitySchemes": {
+      "oauth2": {
+        "type": "oauth2",
+        "description": "Authorize by logging into your XiaoFlow.com account",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": `${baseUrl}/oauth/authorize`,
+            "tokenUrl": `${baseUrl}/oauth/token`,
+            "scopes": {}
+          }
+        }
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API_KEY",
+        "description": "Provide your XiaoFlow API key as a Bearer token or in the SSE URL query ?key=YOUR_API_KEY"
+      }
+    }
+  }, 200, getCorsHeaders(c));
+});
+
+// OAuth / Web Login Authorization Redirects
+app.get("/oauth/authorize", (c) => {
+  const url = new URL(c.req.url);
+  const redirectUri = url.searchParams.get("redirect_uri") || url.searchParams.get("redirect") || "";
+  const state = url.searchParams.get("state") || "";
+  const clientId = url.searchParams.get("client_id") || "";
+
+  const target = new URL("https://www.xiaoflow.com/mcp");
+  if (redirectUri) target.searchParams.set("redirect_uri", redirectUri);
+  if (state) target.searchParams.set("state", state);
+  if (clientId) target.searchParams.set("client_id", clientId);
+
+  return c.redirect(target.toString(), 302);
+});
+
+app.get("/authorize", (c) => {
+  const url = new URL(c.req.url);
+  const redirectUri = url.searchParams.get("redirect_uri") || url.searchParams.get("redirect") || "";
+  const state = url.searchParams.get("state") || "";
+
+  const target = new URL("https://www.xiaoflow.com/mcp");
+  if (redirectUri) target.searchParams.set("redirect_uri", redirectUri);
+  if (state) target.searchParams.set("state", state);
+
+  return c.redirect(target.toString(), 302);
+});
+
+app.all("/oauth/token", (c) => {
+  return c.json({
+    token_type: "Bearer",
+    access_token: c.req.query("code") || c.req.query("key") || "xiaoflow_oauth_authorized",
+    expires_in: 31536000
+  }, 200, getCorsHeaders(c));
+});
 
 app.get("/", async (c) => {
     try {

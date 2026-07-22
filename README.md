@@ -20,6 +20,6 @@
 | `get_domain_stats` | `GET /api/websites/:domain?brand=0\|1` |
 | `list_domain_keywords` | `GET /api/websites/:domain/keywords?brand=0\|1` |
 
-`brand=0` 为站点域名关键词视图；`brand=1` 为品牌（keyword+url seed）视图。指标与 `t` 趋势均来自 MySQL；R2（`SEEDS`）仅存种子关联 slug 列表 `{s:[]}`。
+`brand=0` 为站点域名关键词视图；`brand=1` 为品牌（keyword+url seed）视图。指标与 `t` 趋势均来自 MySQL。
 
 构建部署：`cd mcp && npm run build && npm run deploy`
