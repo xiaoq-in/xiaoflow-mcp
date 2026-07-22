@@ -1,5 +1,8 @@
 # XiaoFlow MCP Server (`xiaoflow-mcp-server`)
 
+[![xiaoflow-mcp MCP server](https://glama.ai/mcp/servers/xiaoq-in/xiaoflow-mcp/badges/score.svg)](https://glama.ai/mcp/servers/xiaoq-in/xiaoflow-mcp)
+[![xiaoflow-mcp MCP server](https://glama.ai/mcp/servers/xiaoq-in/xiaoflow-mcp/badges/card.svg)](https://glama.ai/mcp/servers/xiaoq-in/xiaoflow-mcp)
+
 Official Model Context Protocol (MCP) server for **XiaoFlow AI SEO Tools** and **Etsy Market Intelligence**.
 
 Connect Large Language Models (LLMs) such as Claude Desktop, Cursor, Windsurf, and VS Code directly to XiaoFlow's search engine optimization, keyword discovery, domain analytics, and marketplace intelligence.
