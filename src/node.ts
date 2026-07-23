@@ -22,6 +22,27 @@ function apiQueryParams(args: Record<string, unknown>): Record<string, unknown> 
   return params;
 }
 
+function keywordApiPayload(args: Record<string, unknown>): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...args };
+  if (payload.location !== undefined) {
+    payload.gl = payload.location;
+    delete payload.location;
+  }
+  if (payload.language !== undefined) {
+    payload.hl = payload.language;
+    delete payload.language;
+  }
+  if (payload.time_range !== undefined && payload.history_months === undefined) {
+    const match = String(payload.time_range).match(/^(\d+)/);
+    payload.history_months = match ? Number(match[1]) : 12;
+    delete payload.time_range;
+  }
+  payload.history_months = Math.min(48, Math.max(1, Number(payload.history_months || 12)));
+  payload.with_history = payload.with_history !== false;
+  payload.historical = payload.with_history;
+  return payload;
+}
+
 function normalizeDomainInput(raw: string): string {
   const s = raw.trim();
   try {
@@ -34,7 +55,7 @@ function normalizeDomainInput(raw: string): string {
 
 function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
   const server = new Server(
-    { name: "xiaoflow-mcp-server", version: "1.3.0" },
+    { name: "xiaoflow-mcp-server", version: "1.3.1" },
     { capabilities: { tools: {} } }
   );
 
@@ -54,7 +75,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
     tools: [
       {
         name: "discover_keywords",
-        description: "Generate keyword ideas from keyword, URL, or domain seeds (Google Ads discovery).",
+        description: "Legacy alias for related keyword discovery. Returns paginated keyword metrics and monthly history.",
         inputSchema: {
           type: "object",
           properties: {
@@ -64,6 +85,80 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             location: { type: "string", description: "Geo ID or ISO (e.g. 2840 or US)." },
             language: { type: "string", description: "Language ID or code (e.g. 1000 or en)." },
           },
+        },
+      },
+      {
+        name: "get_keyword_metrics",
+        description: "Get exact-match base metrics and 1-48 months of monthly history for one keyword.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            keyword: { type: "string" },
+            history_months: { type: "integer", minimum: 1, maximum: 48, default: 12 },
+            location: { type: "string" },
+            language: { type: "string" },
+          },
+          required: ["keyword"],
+        },
+      },
+      {
+        name: "get_related_keywords",
+        description: "Get all related keywords for a seed with metrics/history. Paginate until has_more=false; no total-result cap.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            seed: { type: "string" },
+            history_months: { type: "integer", minimum: 1, maximum: 48, default: 12 },
+            page: { type: "integer", minimum: 1, default: 1 },
+            page_size: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
+            location: { type: "string" },
+            language: { type: "string" },
+            force: { type: "boolean" },
+          },
+          required: ["seed"],
+        },
+      },
+      {
+        name: "bulk_keyword_metrics",
+        description: "Get exact-match base metrics and 1-48 months of history for up to 1,000 keywords.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            keywords: { type: "array", minItems: 1, maxItems: 1000, items: { type: "string" } },
+            history_months: { type: "integer", minimum: 1, maximum: 48, default: 12 },
+            location: { type: "string" },
+            language: { type: "string" },
+          },
+          required: ["keywords"],
+        },
+      },
+      {
+        name: "start_keyword_expansion",
+        description: "Start an asynchronous breadth-first/round-based keyword expansion.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            seeds: { type: "array", minItems: 1, maxItems: 20, items: { type: "string" } },
+            max_iterations: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+            min_search_volume: { type: "integer", minimum: 0, default: 0 },
+            location_id: { type: "integer", default: 2840 },
+            language_id: { type: "integer", default: 1000 },
+            include_rules: { type: "array", items: { type: "string" } },
+            exclude_rules: { type: "array", items: { type: "string" } },
+          },
+          required: ["seeds"],
+        },
+      },
+      {
+        name: "get_keyword_expansion_status",
+        description: "Poll a round-based expansion task and optionally return its results.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            task_id: { type: "integer" },
+            include_results: { type: "boolean", default: false },
+          },
+          required: ["task_id"],
         },
       },
       {
@@ -151,8 +246,43 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
     try {
       switch (name) {
         case "discover_keywords": {
-          const response = await axiosInstance.get("/api/v1/keywords", {
-            params: apiQueryParams(toolArgs),
+          const payload = keywordApiPayload({
+            ...toolArgs,
+            seed: toolArgs.keyword,
+            page: toolArgs.page || 1,
+            page_size: toolArgs.page_size || 100,
+          });
+          delete payload.keyword;
+          const response = await axiosInstance.post("/api/v1/keywords/related", payload);
+          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+        }
+        case "get_keyword_metrics": {
+          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+        }
+        case "get_related_keywords": {
+          const response = await axiosInstance.post("/api/v1/keywords/related", keywordApiPayload(toolArgs));
+          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+        }
+        case "bulk_keyword_metrics": {
+          const keywords = Array.isArray(toolArgs.keywords) ? toolArgs.keywords : [];
+          if (keywords.length < 1 || keywords.length > 1000) {
+            throw new McpError(ErrorCode.InvalidParams, "keywords must contain 1 to 1,000 items");
+          }
+          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+        }
+        case "start_keyword_expansion": {
+          const response = await axiosInstance.post("/api/v1/keywords/expansions", toolArgs);
+          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+        }
+        case "get_keyword_expansion_status": {
+          const taskId = Number(toolArgs.task_id);
+          if (!Number.isInteger(taskId) || taskId < 1) {
+            throw new McpError(ErrorCode.InvalidParams, "task_id must be a positive integer");
+          }
+          const response = await axiosInstance.get(`/api/v1/keywords/expansions/${taskId}`, {
+            params: toolArgs.include_results ? { sync_metrics: 1 } : { live: 1 },
           });
           return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
         }
@@ -199,14 +329,14 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
         }
         case "get_keyword_details": {
           const { slug, ...rest } = toolArgs;
-          const response = await axiosInstance.get(
-            `/api/v1/keywords/${encodeURIComponent(String(slug))}/history`,
-            { params: apiQueryParams(rest) }
-          );
+          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload({
+            ...rest,
+            keyword: String(slug).replace(/-/g, " "),
+          }));
           return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
         }
         case "bulk_keyword_lookup": {
-          const response = await axiosInstance.post("/api/v1/keywords/bulk", toolArgs);
+          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
           return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
         }
         default:

@@ -9,6 +9,11 @@ import {
 import axios from "axios";
 import { Hono } from "hono";
 import { DurableObject } from "cloudflare:workers";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+
+const MCP_RESOURCE = "https://mcp.xiaoflow.com/mcp";
+const AUTHORIZATION_SERVER = "https://www.xiaoflow.com";
+const PROTECTED_RESOURCE_METADATA = "https://mcp.xiaoflow.com/.well-known/oauth-protected-resource";
 
 function brandQueryParam(brand: unknown): 0 | 1 {
   if (brand === 1 || brand === "1" || brand === true) return 1;
@@ -21,6 +26,27 @@ function apiQueryParams(args: Record<string, unknown>): Record<string, unknown> 
   const params: Record<string, unknown> = { ...rest };
   if (brand !== undefined) params.brand = brandQueryParam(brand);
   return params;
+}
+
+function keywordApiPayload(args: Record<string, unknown>): Record<string, unknown> {
+  const payload: Record<string, unknown> = { ...args };
+  if (payload.location !== undefined) {
+    payload.gl = payload.location;
+    delete payload.location;
+  }
+  if (payload.language !== undefined) {
+    payload.hl = payload.language;
+    delete payload.language;
+  }
+  if (payload.time_range !== undefined && payload.history_months === undefined) {
+    const match = String(payload.time_range).match(/^(\d+)/);
+    payload.history_months = match ? Number(match[1]) : 12;
+    delete payload.time_range;
+  }
+  payload.history_months = Math.min(48, Math.max(1, Number(payload.history_months || 12)));
+  payload.with_history = payload.with_history !== false;
+  payload.historical = payload.with_history;
+  return payload;
 }
 
 function normalizeDomainInput(raw: string): string {
@@ -58,6 +84,24 @@ export class McpSession extends DurableObject {
 
     if (method === "OPTIONS" || method === "HEAD") {
       return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    // Streamable HTTP transport. Each request is intentionally stateless, which
+    // works across Worker isolates and avoids pinning HTTP clients to one object.
+    if (pathname === "/mcp") {
+      const apiKey = request.headers.get("X-Xiaoflow-Api-Key") || "";
+      if (!apiKey) {
+        return oauthErrorResponse("invalid_token", "A valid XiaoFlow access token is required.");
+      }
+
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      const server = this.createServerInstance(apiKey);
+      await server.connect(transport);
+      const response = await transport.handleRequest(request);
+      return withCors(response, request);
     }
 
     // SSE Handshake (GET)
@@ -186,7 +230,7 @@ export class McpSession extends DurableObject {
       return new Response(JSON.stringify({ 
         status: "OK", 
         sessionId: this.ctx.id.toString(),
-        mcpVersion: "1.3.0-DO",
+        mcpVersion: "1.3.1-DO",
         timestamp: new Date().toISOString()
       }), { 
         headers: { ...corsHeaders, "Content-Type": "application/json" } 
@@ -198,7 +242,7 @@ export class McpSession extends DurableObject {
 
   private createServerInstance(apiKey: string) {
     const server = new Server(
-      { name: "xiaoflow-mcp-server", version: "1.3.0" },
+      { name: "xiaoflow-mcp-server", version: "1.3.1" },
       { capabilities: { tools: {} } }
     );
 
@@ -223,7 +267,7 @@ export class McpSession extends DurableObject {
       tools: [
         {
           name: "discover_keywords",
-          description: "Generate keyword ideas from keyword, URL, or domain seeds (Google Ads discovery).",
+          description: "Legacy alias for related keyword discovery. Returns paginated keyword metrics and monthly history.",
           inputSchema: {
             type: "object",
             properties: {
@@ -233,6 +277,80 @@ export class McpSession extends DurableObject {
               location: { type: "string", description: "Geo ID or ISO (e.g. 2840 or US)." },
               language: { type: "string", description: "Language ID or code (e.g. 1000 or en)." },
             },
+          },
+        },
+        {
+          name: "get_keyword_metrics",
+          description: "Get exact-match base metrics and 1-48 months of monthly history for one keyword.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              keyword: { type: "string", description: "Exact keyword text." },
+              history_months: { type: "integer", minimum: 1, maximum: 48, default: 12 },
+              location: { type: "string", description: "Geo ID or ISO country code, e.g. 2840 or US." },
+              language: { type: "string", description: "Language ID or code, e.g. 1000 or en." },
+            },
+            required: ["keyword"],
+          },
+        },
+        {
+          name: "get_related_keywords",
+          description: "Get all related keywords for a seed with metrics and optional 1-48 month history. Paginate until has_more=false; there is no total-result cap.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              seed: { type: "string", description: "Seed keyword." },
+              history_months: { type: "integer", minimum: 1, maximum: 48, default: 12 },
+              page: { type: "integer", minimum: 1, default: 1 },
+              page_size: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
+              location: { type: "string" },
+              language: { type: "string" },
+              force: { type: "boolean", description: "Request fresh discovery when cached coverage is insufficient." },
+            },
+            required: ["seed"],
+          },
+        },
+        {
+          name: "bulk_keyword_metrics",
+          description: "Get exact-match base metrics and 1-48 months of history for up to 1,000 keywords in one request.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              keywords: { type: "array", minItems: 1, maxItems: 1000, items: { type: "string" } },
+              history_months: { type: "integer", minimum: 1, maximum: 48, default: 12 },
+              location: { type: "string" },
+              language: { type: "string" },
+            },
+            required: ["keywords"],
+          },
+        },
+        {
+          name: "start_keyword_expansion",
+          description: "Start an asynchronous breadth-first/round-based keyword expansion from one or more seeds.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              seeds: { type: "array", minItems: 1, maxItems: 20, items: { type: "string" } },
+              max_iterations: { type: "integer", minimum: 1, maximum: 10, default: 5 },
+              min_search_volume: { type: "integer", minimum: 0, default: 0 },
+              location_id: { type: "integer", default: 2840 },
+              language_id: { type: "integer", default: 1000 },
+              include_rules: { type: "array", items: { type: "string" } },
+              exclude_rules: { type: "array", items: { type: "string" } },
+            },
+            required: ["seeds"],
+          },
+        },
+        {
+          name: "get_keyword_expansion_status",
+          description: "Poll a round-based expansion task. Returns progress, depth, counts, provenance and results when requested.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task_id: { type: "integer" },
+              include_results: { type: "boolean", default: false },
+            },
+            required: ["task_id"],
           },
         },
         {
@@ -319,8 +437,43 @@ export class McpSession extends DurableObject {
       try {
         switch (name) {
           case "discover_keywords": {
-            const response = await axiosInstance.get("/api/v1/keywords", {
-              params: apiQueryParams(toolArgs),
+            const payload = keywordApiPayload({
+              ...toolArgs,
+              seed: toolArgs.keyword,
+              page: toolArgs.page || 1,
+              page_size: toolArgs.page_size || 100,
+            });
+            delete payload.keyword;
+            const response = await axiosInstance.post("/api/v1/keywords/related", payload);
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "get_keyword_metrics": {
+            const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "get_related_keywords": {
+            const response = await axiosInstance.post("/api/v1/keywords/related", keywordApiPayload(toolArgs));
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "bulk_keyword_metrics": {
+            const keywords = Array.isArray(toolArgs.keywords) ? toolArgs.keywords : [];
+            if (keywords.length < 1 || keywords.length > 1000) {
+              throw new McpError(ErrorCode.InvalidParams, "keywords must contain 1 to 1,000 items");
+            }
+            const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "start_keyword_expansion": {
+            const response = await axiosInstance.post("/api/v1/keywords/expansions", toolArgs);
+            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          }
+          case "get_keyword_expansion_status": {
+            const taskId = Number(toolArgs.task_id);
+            if (!Number.isInteger(taskId) || taskId < 1) {
+              throw new McpError(ErrorCode.InvalidParams, "task_id must be a positive integer");
+            }
+            const response = await axiosInstance.get(`/api/v1/keywords/expansions/${taskId}`, {
+              params: toolArgs.include_results ? { sync_metrics: 1 } : { live: 1 },
             });
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
@@ -367,14 +520,14 @@ export class McpSession extends DurableObject {
           }
           case "get_keyword_details": {
             const { slug, ...rest } = toolArgs;
-            const response = await axiosInstance.get(
-              `/api/v1/keywords/${encodeURIComponent(String(slug))}/history`,
-              { params: apiQueryParams(rest) }
-            );
+            const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload({
+              ...rest,
+              keyword: String(slug).replace(/-/g, " "),
+            }));
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           case "bulk_keyword_lookup": {
-            const response = await axiosInstance.post("/api/v1/keywords/bulk", toolArgs);
+            const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
             return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
           }
           default:
@@ -439,20 +592,110 @@ const getCorsHeaders = (cOrReq: any) => {
     origin = cOrReq.req.header("Origin");
   }
 
-  const isAllowed = true;
   const allowedOrigin = origin || "*";
-  const allowCredentials = "true";
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-mcp-session-id",
-    "Access-Control-Expose-Headers": "Content-Type, x-mcp-session-id",
-    "Access-Control-Allow-Credentials": allowCredentials,
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Last-Event-ID, MCP-Protocol-Version, MCP-Session-Id, x-mcp-session-id",
+    "Access-Control-Expose-Headers": "Content-Type, MCP-Protocol-Version, MCP-Session-Id, x-mcp-session-id, WWW-Authenticate",
   };
 };
 
-const app = new Hono<{ Bindings: { MCP_SESSION: DurableObjectNamespace } }>();
+function withCors(response: Response, request: Request): Response {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(getCorsHeaders(request))) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function oauthErrorResponse(error = "invalid_token", description = "Authentication required."): Response {
+  return new Response(JSON.stringify({
+    error,
+    error_description: description,
+  }), {
+    status: 401,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "WWW-Authenticate": `Bearer resource_metadata="${PROTECTED_RESOURCE_METADATA}", scope="mcp", error="${error}"`,
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Expose-Headers": "WWW-Authenticate",
+    },
+  });
+}
+
+function bearerToken(request: Request): string {
+  const authorization = request.headers.get("Authorization") || "";
+  return authorization.toLowerCase().startsWith("bearer ")
+    ? authorization.slice(7).trim()
+    : "";
+}
+
+async function validateAccessToken(token: string, apiBaseUrl: string): Promise<boolean> {
+  if (!token) return false;
+  try {
+    const response = await fetch(`${apiBaseUrl.replace(/\/$/, "")}/api/v1/user`, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/json",
+      },
+    });
+    return response.ok;
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "mcp_token_validation_failed",
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return false;
+  }
+}
+
+const app = new Hono<{ Bindings: Env }>();
+
+app.get("/.well-known/oauth-protected-resource", (c) => c.json({
+  resource: MCP_RESOURCE,
+  authorization_servers: [AUTHORIZATION_SERVER],
+  scopes_supported: ["mcp"],
+  bearer_methods_supported: ["header"],
+  resource_documentation: "https://www.xiaoflow.com/mcp",
+}, 200, {
+  ...getCorsHeaders(c),
+  "Cache-Control": "public, max-age=300",
+}));
+
+app.get("/.well-known/oauth-protected-resource/mcp", (c) => c.json({
+  resource: MCP_RESOURCE,
+  authorization_servers: [AUTHORIZATION_SERVER],
+  scopes_supported: ["mcp"],
+  bearer_methods_supported: ["header"],
+  resource_documentation: "https://www.xiaoflow.com/mcp",
+}, 200, {
+  ...getCorsHeaders(c),
+  "Cache-Control": "public, max-age=300",
+}));
+
+// Compatibility for clients that attempt authorization-server discovery on the
+// resource host before following the issuer from protected-resource metadata.
+app.get("/.well-known/oauth-authorization-server", (c) => c.json({
+  issuer: AUTHORIZATION_SERVER,
+  authorization_endpoint: `${AUTHORIZATION_SERVER}/mcp/authorize`,
+  token_endpoint: `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/token`,
+  registration_endpoint: `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`,
+  response_types_supported: ["code"],
+  grant_types_supported: ["authorization_code"],
+  token_endpoint_auth_methods_supported: ["none"],
+  code_challenge_methods_supported: ["S256"],
+  scopes_supported: ["mcp"],
+}, 200, {
+  ...getCorsHeaders(c),
+  "Cache-Control": "public, max-age=300",
+}));
 
 app.get("/.well-known/mcp/server-card.json", (c) => {
   const url = new URL(c.req.url);
@@ -460,25 +703,20 @@ app.get("/.well-known/mcp/server-card.json", (c) => {
   return c.json({
     "$schema": "https://smithery.ai/server-card-schema.json",
     "name": "xiaoflow-mcp-server",
-    "description": "XiaoFlow AI SEO Tools and Etsy Keyword Analytics MCP Server",
-    "version": "1.3.0",
-    "protocolVersion": "2024-11-05",
+    "description": "XiaoFlow AI SEO and keyword intelligence MCP Server",
+    "version": "1.3.1",
+    "protocolVersion": "2025-03-26",
     "capabilities": {
       "tools": {}
     },
     "transport": {
-      "type": "sse",
-      "endpoint": `${baseUrl}/sse`
+      "type": "streamable-http",
+      "endpoint": `${baseUrl}/mcp`
     },
     "configSchema": {
       "type": "object",
-      "properties": {
-        "apiKey": {
-          "type": "string",
-          "description": "Your XiaoFlow API Key (from https://www.xiaoflow.com/user/api-keys)"
-        }
-      },
-      "required": ["apiKey"]
+      "additionalProperties": false,
+      "properties": {}
     },
     "securitySchemes": {
       "oauth2": {
@@ -496,7 +734,7 @@ app.get("/.well-known/mcp/server-card.json", (c) => {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "API_KEY",
-        "description": "Provide your XiaoFlow API key as a Bearer token or in the SSE URL query ?key=YOUR_API_KEY"
+        "description": "Provide your XiaoFlow API key as a Bearer token"
       }
     }
   }, 200, getCorsHeaders(c));
@@ -508,25 +746,20 @@ app.get("/.well-known/mcp-server-card.json", (c) => {
   return c.json({
     "$schema": "https://smithery.ai/server-card-schema.json",
     "name": "xiaoflow-mcp-server",
-    "description": "XiaoFlow AI SEO Tools and Etsy Keyword Analytics MCP Server",
-    "version": "1.3.0",
-    "protocolVersion": "2024-11-05",
+    "description": "XiaoFlow AI SEO and keyword intelligence MCP Server",
+    "version": "1.3.1",
+    "protocolVersion": "2025-03-26",
     "capabilities": {
       "tools": {}
     },
     "transport": {
-      "type": "sse",
-      "endpoint": `${baseUrl}/sse`
+      "type": "streamable-http",
+      "endpoint": `${baseUrl}/mcp`
     },
     "configSchema": {
       "type": "object",
-      "properties": {
-        "apiKey": {
-          "type": "string",
-          "description": "Your XiaoFlow API Key (from https://www.xiaoflow.com/user/api-keys)"
-        }
-      },
-      "required": ["apiKey"]
+      "additionalProperties": false,
+      "properties": {}
     },
     "securitySchemes": {
       "oauth2": {
@@ -544,45 +777,46 @@ app.get("/.well-known/mcp-server-card.json", (c) => {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "API_KEY",
-        "description": "Provide your XiaoFlow API key as a Bearer token or in the SSE URL query ?key=YOUR_API_KEY"
+        "description": "Provide your XiaoFlow API key as a Bearer token"
       }
     }
   }, 200, getCorsHeaders(c));
 });
 
-// OAuth / Web Login Authorization Redirects
+// OAuth compatibility routes. Standards-compliant clients discover the
+// authorization server above; older clients may call these resource-host URLs.
 app.get("/oauth/authorize", (c) => {
   const url = new URL(c.req.url);
-  const redirectUri = url.searchParams.get("redirect_uri") || url.searchParams.get("redirect") || "";
-  const state = url.searchParams.get("state") || "";
-  const clientId = url.searchParams.get("client_id") || "";
-
-  const target = new URL("https://www.xiaoflow.com/mcp");
-  if (redirectUri) target.searchParams.set("redirect_uri", redirectUri);
-  if (state) target.searchParams.set("state", state);
-  if (clientId) target.searchParams.set("client_id", clientId);
-
+  const target = new URL(`${AUTHORIZATION_SERVER}/mcp/authorize`);
+  url.searchParams.forEach((value, key) => target.searchParams.set(key, value));
   return c.redirect(target.toString(), 302);
 });
 
-app.get("/authorize", (c) => {
-  const url = new URL(c.req.url);
-  const redirectUri = url.searchParams.get("redirect_uri") || url.searchParams.get("redirect") || "";
-  const state = url.searchParams.get("state") || "";
+app.get("/authorize", (c) => c.redirect(`${AUTHORIZATION_SERVER}/mcp/authorize?${new URL(c.req.url).searchParams}`, 302));
 
-  const target = new URL("https://www.xiaoflow.com/mcp");
-  if (redirectUri) target.searchParams.set("redirect_uri", redirectUri);
-  if (state) target.searchParams.set("state", state);
-
-  return c.redirect(target.toString(), 302);
+app.all("/oauth/token", async (c) => {
+  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/token`;
+  const response = await fetch(target, {
+    method: c.req.method,
+    headers: {
+      "Content-Type": c.req.header("Content-Type") || "application/x-www-form-urlencoded",
+      "Accept": "application/json",
+    },
+    body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
+  });
+  return withCors(response, c.req.raw);
 });
 
-app.all("/oauth/token", (c) => {
-  return c.json({
-    token_type: "Bearer",
-    access_token: c.req.query("code") || c.req.query("key") || "xiaoflow_oauth_authorized",
-    expires_in: 31536000
-  }, 200, getCorsHeaders(c));
+app.post("/oauth/register", async (c) => {
+  const response = await fetch(`${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`, {
+    method: "POST",
+    headers: {
+      "Content-Type": c.req.header("Content-Type") || "application/json",
+      "Accept": "application/json",
+    },
+    body: c.req.raw.body,
+  });
+  return withCors(response, c.req.raw);
 });
 
 app.get("/", async (c) => {
@@ -597,6 +831,8 @@ app.get("/", async (c) => {
             durableObject: "Active",
             sessionId: data.sessionId,
             instructions: "Connect to /sse",
+            streamableHttp: "/mcp",
+            oauthProtectedResource: "/.well-known/oauth-protected-resource",
             timestamp: new Date().toISOString()
         }, 200, getCorsHeaders(c));
     } catch (err: any) {
@@ -605,10 +841,30 @@ app.get("/", async (c) => {
 });
 
 export default {
-    async fetch(request: Request, env: any, ctx: any): Promise<Response> {
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
         const url = new URL(request.url);
         const method = request.method;
         const pathname = url.pathname.replace(/\/$/, "").toLowerCase() || "/";
+
+        if (method === "OPTIONS") {
+            return new Response(null, { status: 204, headers: getCorsHeaders(request) });
+        }
+
+        if (pathname === "/mcp") {
+            const token = bearerToken(request);
+            if (!token) return oauthErrorResponse();
+
+            const apiBaseUrl = env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
+            if (!await validateAccessToken(token, apiBaseUrl)) {
+                return oauthErrorResponse("invalid_token", "The XiaoFlow access token is invalid or expired.");
+            }
+
+            const id = env.MCP_SESSION.newUniqueId();
+            const obj = env.MCP_SESSION.get(id);
+            const forwarded = new Request(request);
+            forwarded.headers.set("X-Xiaoflow-Api-Key", token);
+            return obj.fetch(forwarded);
+        }
 
         if (pathname === "/sse" || pathname === "/messages") {
             const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id");
@@ -629,4 +885,4 @@ export default {
 
         return app.fetch(request, env, ctx);
     }
-};
+} satisfies ExportedHandler<Env>;
