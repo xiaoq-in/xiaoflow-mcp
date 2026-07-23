@@ -1,20 +1,11 @@
-# Smithery configuration for xiaoflow-mcp-server
-# https://smithery.ai/
+# Compatibility manifest for clients and legacy Smithery importers.
+# The canonical Smithery listing is published as a remote Streamable HTTP server.
 startCommand:
-  type: stdio
+  type: http
   config:
-    command: npx
-    args:
-      - -y
-      - xiaoflow-mcp-server
-  env:
-    XIAOFLOW_API_KEY: "YOUR_XIAOFLOW_API_KEY"
+    url: https://mcp.xiaoflow.com/mcp
 
 configSchema:
   type: object
-  properties:
-    apiKey:
-      type: string
-      description: "Your XiaoFlow API Key (from https://www.xiaoflow.com/user/api-keys)"
-  required:
-    - apiKey
+  additionalProperties: false
+  properties: {}

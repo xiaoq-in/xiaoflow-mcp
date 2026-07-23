@@ -1,7 +1,7 @@
 {
   "name": "xiaoflow-mcp-server",
-  "version": "1.0.2",
-  "description": "Official MCP server for XiaoFlow AI SEO Tools and Etsy Keyword Analytics",
+  "version": "1.3.1",
+  "description": "Official MCP server for XiaoFlow AI SEO and keyword intelligence tools",
   "main": "build/node.js",
   "type": "module",
   "bin": {
@@ -28,7 +28,6 @@
     "xiaoflow",
     "seo",
     "keyword-research",
-    "etsy-seo",
     "ai-tools"
   ],
   "repository": {
@@ -36,6 +35,13 @@
     "url": "git+https://github.com/xiaoq-in/xiaoflow-mcp.git"
   },
   "homepage": "https://www.xiaoflow.com/mcp",
+  "bugs": {
+    "url": "https://github.com/xiaoq-in/xiaoflow-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "author": "XiaoFlow Team <contact@xiaoflow.com>",
   "license": "MIT",
   "dependencies": {
@@ -45,9 +51,8 @@
     "hono": "^4.6.14"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260423.1",
     "@types/node": "^20.8.0",
     "typescript": "^5.2.2",
-    "wrangler": "^3.91.0"
+    "wrangler": "^4.113.0"
   }
 }
