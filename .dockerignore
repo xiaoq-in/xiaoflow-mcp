@@ -1,0 +1,8 @@
+.git
+.wrangler
+node_modules
+build
+npm-debug.log*
+.env
+.dev.vars
+user-xiaoflow-etsy

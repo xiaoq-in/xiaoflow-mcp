@@ -13,6 +13,7 @@ import axios from "axios";
 import { Hono } from "hono";
 import { DurableObject } from "cloudflare:workers";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { enhanceTools, SERVER_INFO } from "./tool-quality.js";
 
 const MCP_RESOURCE = "https://mcp.xiaoflow.com/mcp";
 const AUTHORIZATION_SERVER = "https://www.xiaoflow.com";
@@ -245,7 +246,7 @@ export class McpSession extends DurableObject {
 
   private createServerInstance(apiKey: string) {
     const server = new Server(
-      { name: "xiaoflow-mcp-server", version: "1.3.1" },
+      SERVER_INFO,
       { capabilities: { tools: {}, resources: {}, prompts: {} } }
     );
 
@@ -267,7 +268,7 @@ export class McpSession extends DurableObject {
 
   private setupHandlers(server: Server, axiosInstance: any) {
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
+      tools: enhanceTools([
         {
           name: "discover_keywords",
           description: "Legacy alias for related keyword discovery. Returns paginated keyword metrics and monthly history.",
@@ -431,7 +432,7 @@ export class McpSession extends DurableObject {
             required: ["keywords"],
           },
         },
-      ],
+      ]),
     }));
 
     // MCP directories commonly probe every discovery method, including for
@@ -712,8 +713,11 @@ app.get("/.well-known/mcp/server-card.json", (c) => {
   return c.json({
     "$schema": "https://smithery.ai/server-card-schema.json",
     "name": "xiaoflow-mcp-server",
+    "title": "XiaoFlow Keyword Intelligence",
     "description": "XiaoFlow AI SEO and keyword intelligence MCP Server",
     "version": "1.3.1",
+    "homepage": "https://www.xiaoflow.com/mcp",
+    "icon": "https://www.xiaoflow.com/logo.png",
     "protocolVersion": "2025-03-26",
     "capabilities": {
       "tools": {},
@@ -757,8 +761,11 @@ app.get("/.well-known/mcp-server-card.json", (c) => {
   return c.json({
     "$schema": "https://smithery.ai/server-card-schema.json",
     "name": "xiaoflow-mcp-server",
+    "title": "XiaoFlow Keyword Intelligence",
     "description": "XiaoFlow AI SEO and keyword intelligence MCP Server",
     "version": "1.3.1",
+    "homepage": "https://www.xiaoflow.com/mcp",
+    "icon": "https://www.xiaoflow.com/logo.png",
     "protocolVersion": "2025-03-26",
     "capabilities": {
       "tools": {},

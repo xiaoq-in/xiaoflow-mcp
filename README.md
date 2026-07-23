@@ -7,6 +7,12 @@ Official Model Context Protocol (MCP) server for **XiaoFlow AI SEO and keyword i
 
 Connect Large Language Models (LLMs) such as Claude Desktop, Cursor, Windsurf, and VS Code directly to XiaoFlow's search engine optimization, keyword discovery, and domain analytics.
 
+**Remote endpoint:** `https://mcp.xiaoflow.com/mcp`
+
+**Transport:** MCP Streamable HTTP with OAuth 2.1 / PKCE, plus stdio through the npm package
+
+**Safety:** Read-only research tools, except asynchronous expansion task creation; no destructive tools
+
 ## Official listings
 
 - [npm — `xiaoflow-mcp-server`](https://www.npmjs.com/package/xiaoflow-mcp-server)
@@ -133,8 +139,38 @@ For stdio-only clients, bridge to the OAuth-enabled remote endpoint:
 | `analyze_url` | Analyze page or domain search visibility | `url`, `site`, `brand`, `location`, `language` |
 | `get_domain_stats` | Overview search metrics & traffic trends for a domain | `domain`, `brand` (required: `0`=domain, `1`=brand) |
 | `list_domain_keywords` | Retrieve paginated list of domain keywords | `domain`, `brand`, `page`, `page_size` |
+| `get_keyword_details` | Retrieve keyword metrics for a 12, 24, or 48 month window | `slug`, `time_range`, `location`, `language` |
+| `discover_keywords` | Backward-compatible related keyword discovery | `keyword`, `url`, `site`, `location`, `language` |
+| `bulk_keyword_lookup` | Backward-compatible bulk metrics lookup | `keywords`, `location`, `language` |
 
 Legacy aliases remain available for backward compatibility.
+
+Every tool publishes:
+
+- descriptions for every input parameter;
+- a named JSON output schema, including success and error fields;
+- MCP safety annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`);
+- a human-readable tool title for MCP clients and directories.
+
+## Example prompts
+
+```text
+Get US English metrics and 24 months of history for "AI SEO tools".
+```
+
+```text
+Find every related keyword for "standing desk", 200 per page, and continue
+until has_more is false. Return search volume, CPC, competition, intent, and history.
+```
+
+```text
+Compare these 1,000 keywords over 48 months and rank them by search volume growth.
+```
+
+```text
+Expand "home office" for four rounds, keep terms with at least 100 monthly
+searches, and poll the task until it is complete.
+```
 
 ---
 
@@ -148,6 +184,42 @@ Supported authentication methods:
 2. **Environment Variable**: set `XIAOFLOW_API_KEY` when running via `npx`.
 3. **Authorization Header**: send `Authorization: Bearer YOUR_API_KEY`.
 4. **Legacy Query Parameter**: append `?key=YOUR_API_KEY` to the legacy SSE URL.
+
+## 🐳 Docker / Glama
+
+The repository includes a production multi-stage `Dockerfile` for directory
+build verification and stdio deployment:
+
+```bash
+docker build -t xiaoflow-mcp .
+docker run --rm -i \
+  -e XIAOFLOW_API_KEY="YOUR_API_KEY" \
+  xiaoflow-mcp
+```
+
+The image runs as the unprivileged Node user, excludes local secrets and build
+state, and writes MCP protocol messages only to stdout.
+
+## 🔐 Security and data handling
+
+- OAuth login occurs only on `www.xiaoflow.com`; MCP clients never receive your password.
+- API keys and OAuth tokens are sent only to the configured XiaoFlow API endpoint.
+- The server does not scan or upload project files.
+- Tool calls query external XiaoFlow/Google Ads-backed data and may consume account credits.
+- No tool deletes or modifies keyword or domain data.
+
+Report vulnerabilities privately through the repository owner or the
+[XiaoFlow contact page](https://www.xiaoflow.com/contact). Do not include tokens
+or customer data in public issues.
+
+## ✅ Quality and compatibility
+
+- MCP protocol: Streamable HTTP and stdio
+- Authentication: OAuth 2.1 with PKCE, Bearer API key
+- Tool schemas: parameter descriptions, structured output schemas, annotations
+- Optional discovery methods: resources and prompts return valid empty lists
+- Runtime: Node.js 18+ (`node:20-alpine` in Docker)
+- Continuous endpoint: `https://mcp.xiaoflow.com/mcp`
 
 ---
 

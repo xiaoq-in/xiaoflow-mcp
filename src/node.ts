@@ -12,6 +12,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
+import { enhanceTools, SERVER_INFO } from "./tool-quality.js";
 
 function brandQueryParam(brand: unknown): 0 | 1 {
   if (brand === 1 || brand === "1" || brand === true) return 1;
@@ -58,7 +59,7 @@ function normalizeDomainInput(raw: string): string {
 
 function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
   const server = new Server(
-    { name: "xiaoflow-mcp-server", version: "1.3.1" },
+    SERVER_INFO,
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
@@ -75,7 +76,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+    tools: enhanceTools([
       {
         name: "discover_keywords",
         description: "Legacy alias for related keyword discovery. Returns paginated keyword metrics and monthly history.",
@@ -239,7 +240,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
           required: ["keywords"],
         },
       },
-    ],
+    ]),
   }));
 
   // MCP directories commonly probe every discovery method, including for
