@@ -5,6 +5,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ErrorCode,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -56,7 +59,7 @@ function normalizeDomainInput(raw: string): string {
 function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
   const server = new Server(
     { name: "xiaoflow-mcp-server", version: "1.3.1" },
-    { capabilities: { tools: {} } }
+    { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
   const axiosInstance = axios.create({
@@ -238,6 +241,12 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
       },
     ],
   }));
+
+  // MCP directories commonly probe every discovery method, including for
+  // tool-only servers. Return protocol-valid empty collections.
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;

@@ -2,6 +2,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
   ErrorCode,
   McpError,
@@ -243,7 +246,7 @@ export class McpSession extends DurableObject {
   private createServerInstance(apiKey: string) {
     const server = new Server(
       { name: "xiaoflow-mcp-server", version: "1.3.1" },
-      { capabilities: { tools: {} } }
+      { capabilities: { tools: {}, resources: {}, prompts: {} } }
     );
 
     const axiosInstance = axios.create({
@@ -430,6 +433,12 @@ export class McpSession extends DurableObject {
         },
       ],
     }));
+
+    // MCP directories commonly probe every discovery method, including for
+    // tool-only servers. Return protocol-valid empty collections.
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+    server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
@@ -707,7 +716,9 @@ app.get("/.well-known/mcp/server-card.json", (c) => {
     "version": "1.3.1",
     "protocolVersion": "2025-03-26",
     "capabilities": {
-      "tools": {}
+      "tools": {},
+      "resources": {},
+      "prompts": {}
     },
     "transport": {
       "type": "streamable-http",
@@ -750,7 +761,9 @@ app.get("/.well-known/mcp-server-card.json", (c) => {
     "version": "1.3.1",
     "protocolVersion": "2025-03-26",
     "capabilities": {
-      "tools": {}
+      "tools": {},
+      "resources": {},
+      "prompts": {}
     },
     "transport": {
       "type": "streamable-http",
