@@ -14,6 +14,19 @@ import {
 import axios from "axios";
 import { enhanceTools, SERVER_INFO } from "./tool-quality.js";
 
+function toolResult(data: unknown, isError = false) {
+  const structuredContent =
+    data !== null && typeof data === "object" && !Array.isArray(data)
+      ? data as Record<string, unknown>
+      : { success: !isError, data };
+
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(data) }],
+    structuredContent,
+    ...(isError ? { isError: true } : {}),
+  };
+}
+
 function brandQueryParam(brand: unknown): 0 | 1 {
   if (brand === 1 || brand === "1" || brand === true) return 1;
   return 0;
@@ -264,15 +277,15 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
           });
           delete payload.keyword;
           const response = await axiosInstance.post("/api/v1/keywords/related", payload);
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "get_keyword_metrics": {
           const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "get_related_keywords": {
           const response = await axiosInstance.post("/api/v1/keywords/related", keywordApiPayload(toolArgs));
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "bulk_keyword_metrics": {
           const keywords = Array.isArray(toolArgs.keywords) ? toolArgs.keywords : [];
@@ -280,11 +293,11 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             throw new McpError(ErrorCode.InvalidParams, "keywords must contain 1 to 1,000 items");
           }
           const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "start_keyword_expansion": {
           const response = await axiosInstance.post("/api/v1/keywords/expansions", toolArgs);
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "get_keyword_expansion_status": {
           const taskId = Number(toolArgs.task_id);
@@ -294,7 +307,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
           const response = await axiosInstance.get(`/api/v1/keywords/expansions/${taskId}`, {
             params: toolArgs.include_results ? { sync_metrics: 1 } : { live: 1 },
           });
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "analyze_url": {
           const site = String(toolArgs.site || "").trim();
@@ -306,12 +319,12 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             const response = await axiosInstance.get("/api/v1/websites", {
               params: { ...params, site: domain },
             });
-            return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+            return toolResult(response.data);
           }
           const response = await axiosInstance.get("/api/v1/keywords", {
             params: apiQueryParams(toolArgs),
           });
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "get_domain_stats": {
           const domain = normalizeDomainInput(String(toolArgs.domain || ""));
@@ -323,7 +336,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             `/api/v1/websites/${encodeURIComponent(domain)}`,
             { params }
           );
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "list_domain_keywords": {
           const domain = normalizeDomainInput(String(toolArgs.domain || ""));
@@ -335,7 +348,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             `/api/v1/websites/${encodeURIComponent(domain)}/keywords`,
             { params }
           );
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "get_keyword_details": {
           const { slug, ...rest } = toolArgs;
@@ -343,11 +356,11 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             ...rest,
             keyword: String(slug).replace(/-/g, " "),
           }));
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         case "bulk_keyword_lookup": {
           const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
-          return { content: [{ type: "text", text: JSON.stringify(response.data) }] };
+          return toolResult(response.data);
         }
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
@@ -359,10 +372,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
         error.response?.data?.error ||
         error.message ||
         "Unknown API error";
-      return {
-        content: [{ type: "text", text: `XiaoFlow API Error: ${errorMsg}` }],
-        isError: true,
-      };
+      return toolResult({ success: false, error: `XiaoFlow API Error: ${errorMsg}` }, true);
     }
   });
 

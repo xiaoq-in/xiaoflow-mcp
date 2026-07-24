@@ -130,7 +130,7 @@ const expansionStatusOutput: JsonSchema = {
     results: { type: "array", description: "Accumulated keyword results when requested.", items: keywordSchema },
     error: { type: "string", description: "Task or request failure description." },
   },
-  required: ["success", "task_id", "status"],
+  required: ["success"],
   additionalProperties: true,
 };
 
