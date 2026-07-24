@@ -14,7 +14,7 @@
     "smithery.yaml"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp build/node.js build/index.js",
     "start": "node build/node.js",
     "dev": "tsc --watch",
     "deploy": "wrangler deploy",
