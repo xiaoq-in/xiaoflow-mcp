@@ -55,8 +55,18 @@ function keywordApiPayload(args: Record<string, unknown>): Record<string, unknow
     delete payload.time_range;
   }
   payload.history_months = Math.min(48, Math.max(1, Number(payload.history_months || 12)));
+  payload.date_range = `${payload.history_months}m`;
   payload.with_history = payload.with_history !== false;
   payload.historical = payload.with_history;
+  return payload;
+}
+
+function relatedKeywordPayload(args: Record<string, unknown>): Record<string, unknown> {
+  const payload = keywordApiPayload(args);
+  if (payload.seed !== undefined && payload.keyword === undefined) {
+    payload.keyword = payload.seed;
+  }
+  delete payload.seed;
   return payload;
 }
 
@@ -271,20 +281,19 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
         case "discover_keywords": {
           const payload = keywordApiPayload({
             ...toolArgs,
-            seed: toolArgs.keyword,
+            keyword: toolArgs.keyword || toolArgs.seed,
             page: toolArgs.page || 1,
             page_size: toolArgs.page_size || 100,
           });
-          delete payload.keyword;
-          const response = await axiosInstance.post("/api/v1/keywords/related", payload);
+          const response = await axiosInstance.post("/api/v1/keywords/ideas", payload);
           return toolResult(response.data);
         }
         case "get_keyword_metrics": {
-          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+          const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
           return toolResult(response.data);
         }
         case "get_related_keywords": {
-          const response = await axiosInstance.post("/api/v1/keywords/related", keywordApiPayload(toolArgs));
+          const response = await axiosInstance.post("/api/v1/keywords/ideas", relatedKeywordPayload(toolArgs));
           return toolResult(response.data);
         }
         case "bulk_keyword_metrics": {
@@ -292,7 +301,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
           if (keywords.length < 1 || keywords.length > 1000) {
             throw new McpError(ErrorCode.InvalidParams, "keywords must contain 1 to 1,000 items");
           }
-          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+          const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
           return toolResult(response.data);
         }
         case "start_keyword_expansion": {
@@ -352,14 +361,14 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
         }
         case "get_keyword_details": {
           const { slug, ...rest } = toolArgs;
-          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload({
+          const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload({
             ...rest,
             keyword: String(slug).replace(/-/g, " "),
           }));
           return toolResult(response.data);
         }
         case "bulk_keyword_lookup": {
-          const response = await axiosInstance.post("/api/v1/keywords/metrics", keywordApiPayload(toolArgs));
+          const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
           return toolResult(response.data);
         }
         default:
