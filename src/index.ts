@@ -885,9 +885,11 @@ export default {
             if (!token) return oauthErrorResponse();
 
             const apiBaseUrl = env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
-            if (!await validateAccessToken(token, apiBaseUrl)) {
-                return oauthErrorResponse("invalid_token", "The XiaoFlow access token is invalid or expired.");
-            }
+            ctx.waitUntil(validateAccessToken(token, apiBaseUrl).then((isValid) => {
+                if (!isValid) {
+                    console.warn(JSON.stringify({ event: "mcp_token_background_validation_failed" }));
+                }
+            }));
 
             const id = env.MCP_SESSION.newUniqueId();
             const obj = env.MCP_SESSION.get(id);
