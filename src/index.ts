@@ -39,14 +39,20 @@ function toolResult(data: unknown, isError = false, toolName = "") {
 
   const formattedText = isError ? JSON.stringify(data) : formatXiaoFlowReport(data, toolName);
 
+  // Prevent duplicate UI widgets in the same conversation when AI invokes multiple tools
+  const attachUi = !isError && toolName !== "get_related_keywords" && toolName !== "get_quota" && toolName !== "get_keyword_expansion_status";
+
   return {
-    _meta: {
-      ui: {
-        resourceUri: "ui://xiaoflow/keyword-dashboard",
+    ...(attachUi ? {
+      _meta: {
+        ui: {
+          resourceUri: "ui://xiaoflow/keyword-dashboard-v2",
+        },
       },
-    },
+    } : {}),
     content: [{ type: "text" as const, text: formattedText }],
     structuredContent,
+    data: structuredContent,
     ...(isError ? { isError: true } : {}),
   };
 }
@@ -493,7 +499,7 @@ export class McpSession extends DurableObject {
     }));
 
     const resourceDef = {
-      uri: "ui://xiaoflow/keyword-dashboard",
+      uri: "ui://xiaoflow/keyword-dashboard-v2",
       name: "XiaoFlow Keyword Intelligence Dashboard",
       mimeType: "text/html;profile=mcp-app",
       description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
@@ -514,7 +520,7 @@ export class McpSession extends DurableObject {
     };
 
     const templateDef = {
-      uriTemplate: "ui://xiaoflow/keyword-dashboard",
+      uriTemplate: "ui://xiaoflow/keyword-dashboard-v2",
       name: "XiaoFlow Keyword Intelligence Dashboard",
       mimeType: "text/html;profile=mcp-app",
       description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
@@ -543,11 +549,12 @@ export class McpSession extends DurableObject {
     }));
 
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      if (request.params.uri === "ui://xiaoflow/keyword-dashboard") {
+      const uri = String(request.params.uri || "");
+      if (uri.startsWith("ui://xiaoflow/keyword-dashboard") || uri.includes("keyword-dashboard")) {
         return {
           contents: [
             {
-              uri: "ui://xiaoflow/keyword-dashboard",
+              uri: uri || "ui://xiaoflow/keyword-dashboard-v2",
               mimeType: "text/html;profile=mcp-app",
               text: MCP_APP_HTML_WIDGET,
               domain: WIDGET_DOMAIN,
