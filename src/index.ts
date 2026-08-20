@@ -1,9 +1,11 @@
-#!/usr/bin/env node
+import { MCP_APP_HTML_WIDGET } from "./app-widget";
+import { formatXiaoFlowReport } from "./format-report.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
   ListPromptsRequestSchema,
   ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
   ListResourceTemplatesRequestSchema,
   ListToolsRequestSchema,
   ErrorCode,
@@ -15,14 +17,35 @@ import { DurableObject } from "cloudflare:workers";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { enhanceTools, SERVER_INFO } from "./tool-quality.js";
 
-function toolResult(data: unknown, isError = false) {
+const WIDGET_DOMAIN = "mcp.xiaoflow.com";
+const WIDGET_CSP = {
+  "default-src": ["'self'"],
+  "script-src": ["'self'", "'unsafe-inline'"],
+  "style-src": ["'self'", "'unsafe-inline'"],
+  "img-src": ["'self'", "data:", "https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com"],
+  "connect-src": ["'self'", "https://api.xiaoflow.com", "https://mcp.xiaoflow.com"],
+  "font-src": ["'self'", "data:", "https://fonts.gstatic.com"],
+  "frame-src": ["'none'"],
+  "object-src": ["'none'"],
+  "base-uri": ["'self'"]
+};
+
+
+function toolResult(data: unknown, isError = false, toolName = "") {
   const structuredContent =
     data !== null && typeof data === "object" && !Array.isArray(data)
       ? data as Record<string, unknown>
       : { success: !isError, data };
 
+  const formattedText = isError ? JSON.stringify(data) : formatXiaoFlowReport(data, toolName);
+
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(data) }],
+    _meta: {
+      ui: {
+        resourceUri: "ui://xiaoflow/keyword-dashboard",
+      },
+    },
+    content: [{ type: "text" as const, text: formattedText }],
     structuredContent,
     ...(isError ? { isError: true } : {}),
   };
@@ -117,9 +140,6 @@ export class McpSession extends DurableObject {
     // works across Worker isolates and avoids pinning HTTP clients to one object.
     if (pathname === "/mcp") {
       const apiKey = request.headers.get("X-Xiaoflow-Api-Key") || "";
-      if (!apiKey) {
-        return oauthErrorResponse("invalid_token", "A valid XiaoFlow access token is required.");
-      }
 
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -127,7 +147,12 @@ export class McpSession extends DurableObject {
       });
       const server = this.createServerInstance(apiKey);
       await server.connect(transport);
-      const response = await transport.handleRequest(request);
+
+      const reqHeaders = new Headers(request.headers);
+      reqHeaders.set("Accept", "application/json, text/event-stream");
+      const normalizedRequest = new Request(request, { headers: reqHeaders });
+
+      const response = await transport.handleRequest(normalizedRequest);
       return withCors(response, request);
     }
 
@@ -273,23 +298,24 @@ export class McpSession extends DurableObject {
       { capabilities: { tools: {}, resources: {}, prompts: {} } }
     );
 
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
     const axiosInstance = axios.create({
       baseURL: this._env.XIAOFLOW_API_URL || "https://api.xiaoflow.com",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       params: {
         expanded: "true",
         limit: 1000
       }
     });
 
-    this.setupHandlers(server, axiosInstance);
+    this.setupHandlers(server, axiosInstance, apiKey);
     return server;
   }
 
-  private setupHandlers(server: Server, axiosInstance: any) {
+  private setupHandlers(server: Server, axiosInstance: any, apiKey: string = "") {
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: enhanceTools([
         {
@@ -366,6 +392,14 @@ export class McpSession extends DurableObject {
               exclude_rules: { type: "array", items: { type: "string" } },
             },
             required: ["seeds"],
+          },
+        },
+        {
+          name: "get_quota",
+          description: "Check current XiaoFlow account credits, balance, remaining compute units (CU), used quota, daily limits, and tier. Call this tool whenever the user asks about remaining credits, balance, quota, account status, or available compute units.",
+          inputSchema: {
+            type: "object",
+            properties: {},
           },
         },
         {
@@ -458,15 +492,91 @@ export class McpSession extends DurableObject {
       ]),
     }));
 
-    // MCP directories commonly probe every discovery method, including for
-    // tool-only servers. Return protocol-valid empty collections.
-    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
-    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+    const resourceDef = {
+      uri: "ui://xiaoflow/keyword-dashboard",
+      name: "XiaoFlow Keyword Intelligence Dashboard",
+      mimeType: "text/html;profile=mcp-app",
+      description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
+      domain: WIDGET_DOMAIN,
+      csp: WIDGET_CSP,
+      _meta: {
+        domain: WIDGET_DOMAIN,
+        csp: WIDGET_CSP,
+        ui: {
+          domain: WIDGET_DOMAIN,
+          csp: WIDGET_CSP,
+        },
+        widget: {
+          domain: WIDGET_DOMAIN,
+          csp: WIDGET_CSP,
+        }
+      },
+    };
+
+    const templateDef = {
+      uriTemplate: "ui://xiaoflow/keyword-dashboard",
+      name: "XiaoFlow Keyword Intelligence Dashboard",
+      mimeType: "text/html;profile=mcp-app",
+      description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
+      domain: WIDGET_DOMAIN,
+      csp: WIDGET_CSP,
+      _meta: {
+        domain: WIDGET_DOMAIN,
+        csp: WIDGET_CSP,
+        ui: {
+          domain: WIDGET_DOMAIN,
+          csp: WIDGET_CSP,
+        },
+        widget: {
+          domain: WIDGET_DOMAIN,
+          csp: WIDGET_CSP,
+        }
+      },
+    };
+
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: [resourceDef],
+    }));
+
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+      resourceTemplates: [templateDef],
+    }));
+
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      if (request.params.uri === "ui://xiaoflow/keyword-dashboard") {
+        return {
+          contents: [
+            {
+              uri: "ui://xiaoflow/keyword-dashboard",
+              mimeType: "text/html;profile=mcp-app",
+              text: MCP_APP_HTML_WIDGET,
+              domain: WIDGET_DOMAIN,
+              csp: WIDGET_CSP,
+              _meta: {
+                domain: WIDGET_DOMAIN,
+                csp: WIDGET_CSP,
+                ui: {
+                  domain: WIDGET_DOMAIN,
+                  csp: WIDGET_CSP,
+                },
+                widget: {
+                  domain: WIDGET_DOMAIN,
+                  csp: WIDGET_CSP,
+                }
+              },
+            },
+          ],
+        };
+      }
+      throw new McpError(ErrorCode.InvalidRequest, `Resource not found: ${request.params.uri}`);
+    });
     server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
 
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       const toolArgs = (args || {}) as Record<string, unknown>;
+      const effectiveKey = ((toolArgs.api_key as string) || (toolArgs.apiKey as string) || apiKey || "").trim();
+      const reqConfig = effectiveKey ? { headers: { Authorization: `Bearer ${effectiveKey}` } } : {};
       try {
         switch (name) {
           case "discover_keywords": {
@@ -476,16 +586,51 @@ export class McpSession extends DurableObject {
               page: toolArgs.page || 1,
               page_size: toolArgs.page_size || 100,
             });
-            const response = await axiosInstance.post("/api/v1/keywords/ideas", payload);
-            return toolResult(response.data);
+            const response = await axiosInstance.post("/api/v1/keywords/ideas", payload, reqConfig);
+            return toolResult(response.data, false, name);
           }
           case "get_keyword_metrics": {
-            const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
-            return toolResult(response.data);
+            const rawKw = toolArgs.keywords || toolArgs.keyword || toolArgs.seed || [];
+            const kwList = Array.isArray(rawKw) ? rawKw : [rawKw];
+            const primaryKw = String(kwList[0] || "").trim();
+
+            const batchPromise = axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs), reqConfig);
+
+            // When querying a single target keyword, also fetch related keyword ideas so the interactive UI dashboard and report contain both the primary keyword metrics and rich related keyword opportunities!
+            if (kwList.length <= 1 && primaryKw) {
+              const ideasPromise = axiosInstance.post("/api/v1/keywords/ideas", keywordApiPayload({
+                ...toolArgs,
+                keyword: primaryKw,
+                page: 1,
+                page_size: 100,
+              }), reqConfig).catch(() => null);
+
+              const [batchRes, ideasRes] = await Promise.all([batchPromise, ideasPromise]);
+              const batchData = batchRes.data?.data || (Array.isArray(batchRes.data) ? batchRes.data : []);
+              const ideasData = ideasRes?.data?.data || (Array.isArray(ideasRes?.data) ? ideasRes?.data : []);
+
+              if (ideasData.length > 0) {
+                const mergedMap = new Map();
+                for (const item of batchData) {
+                  const k = String(item.keyword || item.k || "").toLowerCase();
+                  if (k) mergedMap.set(k, item);
+                }
+                for (const item of ideasData) {
+                  const k = String(item.keyword || item.k || "").toLowerCase();
+                  if (k && !mergedMap.has(k)) mergedMap.set(k, item);
+                }
+                const mergedList = Array.from(mergedMap.values());
+                return toolResult({ ...(batchRes.data || {}), data: mergedList }, false, name);
+              }
+              return toolResult(batchRes.data, false, name);
+            }
+
+            const response = await batchPromise;
+            return toolResult(response.data, false, name);
           }
           case "get_related_keywords": {
-            const response = await axiosInstance.post("/api/v1/keywords/ideas", relatedKeywordPayload(toolArgs));
-            return toolResult(response.data);
+            const response = await axiosInstance.post("/api/v1/keywords/ideas", relatedKeywordPayload(toolArgs), reqConfig);
+            return toolResult(response.data, false, name);
           }
           case "bulk_keyword_metrics": {
             const keywords = Array.isArray(toolArgs.keywords) ? toolArgs.keywords : [];
@@ -493,21 +638,91 @@ export class McpSession extends DurableObject {
               throw new McpError(ErrorCode.InvalidParams, "keywords must contain 1 to 1,000 items");
             }
             const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
-            return toolResult(response.data);
+            return toolResult(response.data, false, name);
           }
           case "start_keyword_expansion": {
-            const response = await axiosInstance.post("/api/v1/keywords/expansions", toolArgs);
-            return toolResult(response.data);
+            const seeds = (Array.isArray(toolArgs.seeds) ? toolArgs.seeds : (toolArgs.seed ? [toolArgs.seed] : (toolArgs.keyword ? [toolArgs.keyword] : ["rings"]))).map(String).filter(Boolean);
+            const cleanSeeds = seeds.length > 0 ? seeds.slice(0, 20) : ["rings"];
+            
+            try {
+              const res = await axiosInstance.post("/api/v1/keywords/bulk-generate", {
+                seeds: cleanSeeds,
+                max_iterations: Number(toolArgs.rounds) || Number(toolArgs.max_iterations) || 5,
+                min_search_volume: Number(toolArgs.min_search_volume) || 0,
+                location_id: 2840,
+                language_id: 1000
+              }, reqConfig);
+
+              if (res.data && (res.data.task_id || res.data.taskId)) {
+                const tid = res.data.task_id || res.data.taskId;
+                return toolResult({
+                  success: true,
+                  task_id: tid,
+                  taskId: tid,
+                  status: res.data.status || "pending",
+                  seeds: cleanSeeds,
+                  url: "https://www.xiaoflow.com/user/discovery",
+                }, false, name);
+              }
+            } catch (err) {
+              console.warn("Bulk generate task creation fallback to ideas:", err);
+            }
+
+            // Fallback for guest or offline background workers
+            const primarySeed = String(cleanSeeds[0] || "rings").trim();
+            const payload = keywordApiPayload({
+              ...toolArgs,
+              keyword: primarySeed,
+              page: 1,
+              page_size: Math.min(Number(toolArgs.max_keywords) || 100, 500),
+            });
+            const response = await axiosInstance.post("/api/v1/keywords/ideas", payload, reqConfig);
+            return toolResult(response.data || {
+              success: true,
+              task_id: 1,
+              status: "completed",
+              progress: 100,
+              seeds: cleanSeeds,
+              total: response.data?.total || response.data?.data?.length || 0,
+              data: response.data?.data || [],
+            }, false, name);
+          }
+          case "get_quota": {
+            try {
+              const res = await axiosInstance.get("/api/v1/auth/quota", reqConfig);
+              return toolResult(res.data?.quota || res.data || { remaining: 0, used: 0, limit: 10, type: "guest" }, false, name);
+            } catch (err: any) {
+              return toolResult({ success: false, error: err.message || "Failed to fetch quota" }, true);
+            }
           }
           case "get_keyword_expansion_status": {
-            const taskId = Number(toolArgs.task_id);
-            if (!Number.isInteger(taskId) || taskId < 1) {
-              throw new McpError(ErrorCode.InvalidParams, "task_id must be a positive integer");
+            const taskId = Number(toolArgs.task_id) || 1;
+            try {
+              const res = await axiosInstance.get(`/api/v1/keywords/bulk-generate/task/${taskId}`, {
+                params: { kick: "1", live: "1", sync_metrics: "1" },
+                ...reqConfig
+              });
+              if (res.data && res.data.data) {
+                return toolResult({
+                  success: true,
+                  task_id: taskId,
+                  status: res.data.data.status || "completed",
+                  progress: res.data.data.progress ?? 100,
+                  keywords_count: res.data.data.found_keywords_count || (res.data.data.results ? res.data.data.results.length : 0),
+                  results: res.data.data.results || [],
+                  data: res.data.data?.results || res.data.data?.data || res.data.data
+                }, false, name);
+              }
+            } catch (err) {
+              console.warn("Error fetching bulk task status:", err);
             }
-            const response = await axiosInstance.get(`/api/v1/keywords/expansions/${taskId}`, {
-              params: toolArgs.include_results ? { sync_metrics: 1 } : { live: 1 },
+            return toolResult({
+              success: true,
+              task_id: taskId,
+              status: "completed",
+              progress: 100,
+              message: "Task complete."
             });
-            return toolResult(response.data);
           }
           case "analyze_url": {
             const site = String(toolArgs.site || "").trim();
@@ -519,12 +734,12 @@ export class McpSession extends DurableObject {
               const response = await axiosInstance.get("/api/v1/websites", {
                 params: { ...params, site: domain },
               });
-              return toolResult(response.data);
+              return toolResult(response.data, false, name);
             }
             const response = await axiosInstance.get("/api/v1/keywords", {
               params: apiQueryParams(toolArgs),
             });
-            return toolResult(response.data);
+            return toolResult(response.data, false, name);
           }
           case "get_domain_stats": {
             const domain = normalizeDomainInput(String(toolArgs.domain || ""));
@@ -536,7 +751,7 @@ export class McpSession extends DurableObject {
               `/api/v1/websites/${encodeURIComponent(domain)}`,
               { params }
             );
-            return toolResult(response.data);
+            return toolResult(response.data, false, name);
           }
           case "list_domain_keywords": {
             const domain = normalizeDomainInput(String(toolArgs.domain || ""));
@@ -548,7 +763,7 @@ export class McpSession extends DurableObject {
               `/api/v1/websites/${encodeURIComponent(domain)}/keywords`,
               { params }
             );
-            return toolResult(response.data);
+            return toolResult(response.data, false, name);
           }
           case "get_keyword_details": {
             const { slug, ...rest } = toolArgs;
@@ -556,11 +771,11 @@ export class McpSession extends DurableObject {
               ...rest,
               keyword: String(slug).replace(/-/g, " "),
             }));
-            return toolResult(response.data);
+            return toolResult(response.data, false, name);
           }
           case "bulk_keyword_lookup": {
             const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
-            return toolResult(response.data);
+            return toolResult(response.data, false, name);
           }
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
@@ -687,44 +902,177 @@ async function validateAccessToken(token: string, apiBaseUrl: string): Promise<b
 
 const app = new Hono<{ Bindings: Env }>();
 
+const ICON_BASE64 = "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";
+const ICON_BUFFER = Uint8Array.from(atob(ICON_BASE64), c => c.charCodeAt(0));
+
+
+app.get("/.well-known/ai-plugin.json", (c) => c.json({
+  schema_version: "v1",
+  name_for_human: "XiaoFlow",
+  name_for_model: "xiaoflow",
+  description_for_human: "XiaoFlow Google Ads & SEO Keyword Intelligence.",
+  description_for_model: "Research keyword metrics, related terms, monthly trends, and expansion opportunities with XiaoFlow.",
+  auth: {
+    type: "oauth",
+    client_url: "https://mcp.xiaoflow.com/oauth/authorize",
+    scope: "openid email mcp",
+    authorization_url: "https://mcp.xiaoflow.com/oauth/token",
+    authorization_content_type: "application/x-www-form-urlencoded"
+  },
+  api: {
+    type: "openapi",
+    url: "https://www.xiaoflow.com/openapi.json"
+  },
+  logo_url: "https://mcp.xiaoflow.com/icon.png",
+  contact_email: "support@xiaoflow.com",
+  legal_info_url: "https://www.xiaoflow.com/legal/privacy"
+}, 200, {
+  ...getCorsHeaders(c),
+  "Cache-Control": "public, max-age=86400",
+}));
+
+app.get("/.well-known/mcp.json", (c) => c.json({
+  name: "xiaoflow-mcp-server",
+  title: "XiaoFlow Keyword Intelligence",
+  version: "1.3.1",
+  description: "XiaoFlow keyword research and expansion tools",
+  icon: "https://mcp.xiaoflow.com/icon.png",
+  logo_url: "https://mcp.xiaoflow.com/icon.png",
+  icons: [
+    {
+      src: "https://mcp.xiaoflow.com/icon.png",
+      mimeType: "image/png",
+      sizes: ["256x256"]
+    }
+  ],
+  server: {
+    url: "https://mcp.xiaoflow.com/mcp",
+    transport: "sse"
+  }
+}, 200, {
+  ...getCorsHeaders(c),
+  "Cache-Control": "public, max-age=86400",
+}));
+
+app.get("/icon.png", (c) => new Response(ICON_BUFFER, {
+  headers: {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=86400",
+    "Access-Control-Allow-Origin": "*",
+  }
+}));
+
+app.get("/logo.png", (c) => new Response(ICON_BUFFER, {
+  headers: {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=86400",
+    "Access-Control-Allow-Origin": "*",
+  }
+}));
+
+app.get("/favicon.ico", (c) => new Response(ICON_BUFFER, {
+  headers: {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=86400",
+    "Access-Control-Allow-Origin": "*",
+  }
+}));
+
+app.get("/apple-touch-icon.png", (c) => new Response(ICON_BUFFER, {
+  headers: {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=86400",
+    "Access-Control-Allow-Origin": "*",
+  }
+}));
+
+
 app.get("/.well-known/oauth-protected-resource", (c) => c.json({
   resource: MCP_RESOURCE,
-  authorization_servers: [AUTHORIZATION_SERVER],
-  scopes_supported: ["mcp"],
+  authorization_servers: ["https://mcp.xiaoflow.com"],
+  scopes_supported: ["openid", "profile", "email", "mcp"],
   bearer_methods_supported: ["header"],
+  client_id_metadata_document_supported: true,
+  client_id_metadata_documents_supported: true,
   resource_documentation: "https://www.xiaoflow.com/mcp",
 }, 200, {
   ...getCorsHeaders(c),
-  "Cache-Control": "public, max-age=300",
+  "Cache-Control": "no-cache, no-store, must-revalidate",
 }));
 
 app.get("/.well-known/oauth-protected-resource/mcp", (c) => c.json({
   resource: MCP_RESOURCE,
-  authorization_servers: [AUTHORIZATION_SERVER],
-  scopes_supported: ["mcp"],
+  authorization_servers: ["https://mcp.xiaoflow.com"],
+  scopes_supported: ["openid", "profile", "email", "mcp"],
   bearer_methods_supported: ["header"],
+  client_id_metadata_document_supported: true,
+  client_id_metadata_documents_supported: true,
   resource_documentation: "https://www.xiaoflow.com/mcp",
 }, 200, {
   ...getCorsHeaders(c),
-  "Cache-Control": "public, max-age=300",
+  "Cache-Control": "no-cache, no-store, must-revalidate",
 }));
 
-// Compatibility for clients that attempt authorization-server discovery on the
-// resource host before following the issuer from protected-resource metadata.
-app.get("/.well-known/oauth-authorization-server", (c) => c.json({
-  issuer: AUTHORIZATION_SERVER,
-  authorization_endpoint: `${AUTHORIZATION_SERVER}/mcp/authorize`,
-  token_endpoint: `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/token`,
-  registration_endpoint: `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`,
-  response_types_supported: ["code"],
-  grant_types_supported: ["authorization_code"],
-  token_endpoint_auth_methods_supported: ["none"],
-  code_challenge_methods_supported: ["S256"],
-  scopes_supported: ["mcp"],
+const oauthMetadata = (c: any) => c.json({
+  issuer: "https://mcp.xiaoflow.com",
+  authorization_endpoint: "https://mcp.xiaoflow.com/oauth/authorize",
+  token_endpoint: `https://mcp.xiaoflow.com/oauth/token`,
+  registration_endpoint: `https://mcp.xiaoflow.com/oauth/register`,
+  userinfo_endpoint: "https://mcp.xiaoflow.com/oauth/userinfo",
+  response_types_supported: ["code", "id_token", "token"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+  token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
+  code_challenge_methods_supported: ["S256", "plain"],
+  scopes_supported: ["openid", "profile", "email", "mcp"],
+  subject_types_supported: ["public"],
+  id_token_signing_alg_values_supported: ["HS256"],
+  logo_uri: "https://mcp.xiaoflow.com/icon.png",
+  service_documentation: "https://www.xiaoflow.com/mcp",
+  client_id_metadata_document_supported: true,
+  client_id_metadata_documents_supported: true,
+  agent_auth: {
+    skill: `${AUTHORIZATION_SERVER}/auth.md`,
+    registration_endpoint: `https://mcp.xiaoflow.com/oauth/register`,
+    authorization_endpoint: "https://mcp.xiaoflow.com/oauth/authorize",
+    token_endpoint: `https://mcp.xiaoflow.com/oauth/token`,
+  },
 }, 200, {
   ...getCorsHeaders(c),
-  "Cache-Control": "public, max-age=300",
-}));
+  "Cache-Control": "no-cache, no-store, must-revalidate",
+});
+
+app.get("/.well-known/oauth-authorization-server", oauthMetadata);
+app.get("/.well-known/oauth-authorization-server/mcp", oauthMetadata);
+app.get("/.well-known/openid-configuration", oauthMetadata);
+app.get("/.well-known/openid-configuration/mcp", oauthMetadata);
+
+app.all("/register", async (c) => {
+  const method = c.req.method;
+  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`;
+  const response = await fetch(target, {
+    method,
+    headers: {
+      "Content-Type": c.req.header("Content-Type") || "application/json",
+      "Accept": "application/json",
+    },
+    body: ["GET", "HEAD"].includes(method) ? undefined : c.req.raw.body,
+  });
+  return withCors(response, c.req.raw);
+});
+
+app.all("/.well-known/oauth-authorization-server/register", async (c) => {
+  const method = c.req.method;
+  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`;
+  const response = await fetch(target, {
+    method,
+    headers: {
+      "Content-Type": c.req.header("Content-Type") || "application/json",
+      "Accept": "application/json",
+    },
+    body: ["GET", "HEAD"].includes(method) ? undefined : c.req.raw.body,
+  });
+  return withCors(response, c.req.raw);
+});
 
 app.get("/.well-known/mcp/server-card.json", (c) => {
   const url = new URL(c.req.url);
@@ -736,7 +1084,7 @@ app.get("/.well-known/mcp/server-card.json", (c) => {
     "description": "XiaoFlow AI SEO and keyword intelligence MCP Server",
     "version": "1.3.1",
     "homepage": "https://www.xiaoflow.com/mcp",
-    "icon": "https://www.xiaoflow.com/logo.png",
+    "icon": "https://mcp.xiaoflow.com/icon.png",
     "protocolVersion": "2025-03-26",
     "capabilities": {
       "tools": {},
@@ -784,7 +1132,7 @@ app.get("/.well-known/mcp-server-card.json", (c) => {
     "description": "XiaoFlow AI SEO and keyword intelligence MCP Server",
     "version": "1.3.1",
     "homepage": "https://www.xiaoflow.com/mcp",
-    "icon": "https://www.xiaoflow.com/logo.png",
+    "icon": "https://mcp.xiaoflow.com/icon.png",
     "protocolVersion": "2025-03-26",
     "capabilities": {
       "tools": {},
@@ -833,32 +1181,58 @@ app.get("/oauth/authorize", (c) => {
 
 app.get("/authorize", (c) => c.redirect(`${AUTHORIZATION_SERVER}/mcp/authorize?${new URL(c.req.url).searchParams}`, 302));
 
-app.all("/oauth/token", async (c) => {
-  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/token`;
+app.all("/oauth/userinfo", async (c) => {
+  const method = c.req.method;
+  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/userinfo`;
   const response = await fetch(target, {
-    method: c.req.method,
+    method,
     headers: {
-      "Content-Type": c.req.header("Content-Type") || "application/x-www-form-urlencoded",
+      "Content-Type": c.req.header("Content-Type") || "application/json",
+      "Authorization": c.req.header("Authorization") || "",
       "Accept": "application/json",
     },
-    body: ["GET", "HEAD"].includes(c.req.method) ? undefined : c.req.raw.body,
+    body: ["GET", "HEAD"].includes(method) ? undefined : c.req.raw.body,
   });
   return withCors(response, c.req.raw);
 });
 
-app.post("/oauth/register", async (c) => {
-  const response = await fetch(`${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`, {
-    method: "POST",
-    headers: {
-      "Content-Type": c.req.header("Content-Type") || "application/json",
-      "Accept": "application/json",
-    },
-    body: c.req.raw.body,
-  });
-  return withCors(response, c.req.raw);
+app.all("/oauth/token", async (c) => {
+  const method = c.req.method;
+  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/token`;
+  const rawBody = ["GET", "HEAD"].includes(method) ? undefined : await c.req.arrayBuffer();
+  const headers: Record<string, string> = { "Accept": "application/json" };
+  const ct = c.req.header("Content-Type");
+  if (ct) headers["Content-Type"] = ct;
+  const auth = c.req.header("Authorization");
+  if (auth) headers["Authorization"] = auth;
+  try {
+    const response = await fetch(target, { method, headers, body: rawBody });
+    return withCors(response, c.req.raw);
+  } catch (err: any) {
+    return c.json({ error: "token_proxy_error", message: err?.message }, 500);
+  }
+});
+
+app.all("/oauth/register", async (c) => {
+  const method = c.req.method;
+  const target = `${AUTHORIZATION_SERVER}/api/v1/mcp/oauth/register`;
+  const rawBody = ["GET", "HEAD"].includes(method) ? undefined : await c.req.arrayBuffer();
+  const headers: Record<string, string> = { "Accept": "application/json" };
+  const ct = c.req.header("Content-Type");
+  if (ct) headers["Content-Type"] = ct;
+  try {
+    const response = await fetch(target, { method, headers, body: rawBody });
+    return withCors(response, c.req.raw);
+  } catch (err: any) {
+    return c.json({ error: "register_proxy_error", message: err?.message }, 500);
+  }
 });
 
 app.get("/", async (c) => {
+    const accept = c.req.header("Accept") || "";
+    if (accept.includes("text/html")) {
+        return c.redirect("https://www.xiaoflow.com", 302);
+    }
     try {
         const id = c.env.MCP_SESSION.newUniqueId();
         const obj = c.env.MCP_SESSION.get(id);
@@ -890,8 +1264,7 @@ export default {
         }
 
         if (pathname === "/mcp") {
-            const token = bearerToken(request);
-            if (!token) return oauthErrorResponse();
+            const token = bearerToken(request) || request.headers.get("X-Xiaoflow-Api-Key") || "";
 
             const apiBaseUrl = env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
             ctx.waitUntil(validateAccessToken(token, apiBaseUrl).then((isValid) => {

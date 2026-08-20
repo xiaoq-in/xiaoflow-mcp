@@ -1,3 +1,17 @@
+const quotaOutputSchema: JsonSchema = {
+  type: "object",
+  description: "User account credit balance and quota limits.",
+  properties: {
+    success: { type: "boolean" },
+    remaining: { type: "integer", description: "Remaining compute units (CU)." },
+    credits: { type: "integer", description: "Current credits balance." },
+    used: { type: "integer", description: "Used compute units." },
+    limit: { type: "integer", description: "Daily limit." },
+    type: { type: "string", description: "User tier type." },
+  },
+  additionalProperties: true,
+};
+
 type JsonSchema = Record<string, unknown>;
 type ToolDefinition = {
   name: string;
@@ -52,6 +66,7 @@ const TITLES: Record<string, string> = {
   bulk_keyword_metrics: "Get Bulk Keyword Metrics",
   start_keyword_expansion: "Start Keyword Expansion",
   get_keyword_expansion_status: "Get Keyword Expansion Status",
+  get_quota: "Get Account Balance & Quota",
   analyze_url: "Analyze URL or Site",
   get_domain_stats: "Get Domain Statistics",
   list_domain_keywords: "List Domain Keywords",
@@ -157,6 +172,7 @@ const OUTPUT_SCHEMAS: Record<string, JsonSchema> = {
   bulk_keyword_metrics: keywordListOutput,
   start_keyword_expansion: expansionStartOutput,
   get_keyword_expansion_status: expansionStatusOutput,
+  get_quota: quotaOutputSchema,
   analyze_url: domainOutput,
   get_domain_stats: domainOutput,
   list_domain_keywords: domainOutput,
@@ -180,6 +196,30 @@ export function enhanceTools(tools: ToolDefinition[]): ToolDefinition[] {
     return {
       ...tool,
       title: TITLES[tool.name] ?? tool.name,
+      _meta: {
+        domain: "mcp.xiaoflow.com",
+        csp: {
+          "default-src": ["'self'"],
+          "script-src": ["'self'", "'unsafe-inline'"],
+          "style-src": ["'self'", "'unsafe-inline'"],
+          "img-src": ["'self'", "data:", "https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com"],
+          "connect-src": ["'self'", "https://api.xiaoflow.com", "https://mcp.xiaoflow.com"]
+        },
+        ui: {
+          resourceUri: "ui://xiaoflow/keyword-dashboard",
+          domain: "mcp.xiaoflow.com",
+          csp: {
+            "default-src": ["'self'"],
+            "script-src": ["'self'", "'unsafe-inline'"],
+            "style-src": ["'self'", "'unsafe-inline'"],
+            "img-src": ["'self'", "data:", "https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com"],
+            "connect-src": ["'self'", "https://api.xiaoflow.com", "https://mcp.xiaoflow.com"]
+          }
+        }
+      },
+      description: tool.name === "get_quota" 
+        ? tool.description 
+        : (tool.description + " When presenting output to the user, you MUST include the 48-month search trend chart image markdown ![Search Volume Trend](https://quickchart.io/chart?...) from the tool result, along with the formatted KPI and keyword table."),
       inputSchema: { ...tool.inputSchema, properties },
       outputSchema: OUTPUT_SCHEMAS[tool.name] ?? keywordListOutput,
       annotations: {
@@ -189,6 +229,7 @@ export function enhanceTools(tools: ToolDefinition[]): ToolDefinition[] {
         idempotentHint: !mutates,
         openWorldHint: true,
       },
+
     };
   });
 }
@@ -199,11 +240,19 @@ export const SERVER_INFO = {
   version: "1.3.1",
   description: "Research keyword metrics, related terms, monthly trends, expansion opportunities, and domain search visibility with XiaoFlow.",
   websiteUrl: "https://www.xiaoflow.com/mcp",
+  icon: "https://mcp.xiaoflow.com/icon.png",
+  logoUrl: "https://mcp.xiaoflow.com/icon.png",
+  logo_url: "https://mcp.xiaoflow.com/icon.png",
   icons: [
     {
-      src: "https://www.xiaoflow.com/logo.png",
+      src: "https://mcp.xiaoflow.com/icon.png",
       mimeType: "image/png",
-      sizes: ["512x512"],
+      sizes: ["256x256"],
+    },
+    {
+      src: "https://www.xiaoflow.com/icon.png",
+      mimeType: "image/png",
+      sizes: ["256x256"],
     },
   ],
 };
