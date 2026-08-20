@@ -38,7 +38,7 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       -webkit-font-smoothing: antialiased;
     }
     .container {
-      max-width: 900px;
+      max-width: 960px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -189,7 +189,7 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       color: var(--muted);
     }
     .table-scroll {
-      max-height: 380px;
+      max-height: 400px;
       overflow-y: auto;
     }
     table {
@@ -203,13 +203,39 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       top: 0;
       background: var(--panel);
       padding: 8px 12px;
-      font-weight: 600;
+      font-weight: 700;
       color: var(--muted);
       border-bottom: 1px solid var(--border);
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       z-index: 2;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s;
+    }
+    th:hover {
+      background: rgba(0,0,0,0.03);
+      color: var(--ink);
+    }
+    .th-content {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .sort-icon {
+      font-size: 10px;
+      opacity: 0.4;
+      transition: opacity 0.15s;
+    }
+    th.active-sort .sort-icon {
+      opacity: 1;
+      color: var(--brand);
+      font-weight: 800;
+    }
+    th.active-sort {
+      color: var(--brand);
     }
     td {
       padding: 8px 12px;
@@ -240,7 +266,7 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       opacity: 1;
     }
     .td-vol { font-family: var(--mono); font-weight: 700; color: var(--brand); }
-    .td-cpc { font-family: var(--mono); color: var(--muted); }
+    .td-num { font-family: var(--mono); color: var(--muted); }
     .badge {
       display: inline-block;
       padding: 2px 6px;
@@ -343,11 +369,27 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th>Keyword</th>
-              <th>Volume</th>
-              <th>CPC Range</th>
-              <th>Competition</th>
-              <th>Intent</th>
+              <th onclick="handleSort('k')" id="th-k">
+                <div class="th-content"><span>Keyword</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('v')" id="th-v" class="active-sort">
+                <div class="th-content"><span>Search Volume</span><span class="sort-icon">▼</span></div>
+              </th>
+              <th onclick="handleSort('l')" id="th-l">
+                <div class="th-content"><span>Low Bid</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('h')" id="th-h">
+                <div class="th-content"><span>High Bid</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('i')" id="th-i">
+                <div class="th-content"><span>Competition</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('y')" id="th-y">
+                <div class="th-content"><span>YoY Change</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('it')" id="th-it">
+                <div class="th-content"><span>Intent</span><span class="sort-icon">⇅</span></div>
+              </th>
             </tr>
           </thead>
           <tbody id="kw-tbody"></tbody>
@@ -364,6 +406,10 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
   </div>
 
   <script>
+    var currentSortKey = "v";
+    var currentSortDir = "desc";
+    var cachedData = [];
+
     function toSlug(s) {
       if (!s) return "overview";
       return String(s)
@@ -432,10 +478,100 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       return [];
     }
 
+    function handleSort(key) {
+      if (currentSortKey === key) {
+        currentSortDir = currentSortDir === "desc" ? "asc" : "desc";
+      } else {
+        currentSortKey = key;
+        currentSortDir = (key === "k" || key === "it") ? "asc" : "desc";
+      }
+      updateSortHeaderIcons();
+      renderTableRows();
+    }
+
+    function updateSortHeaderIcons() {
+      var keys = ["k", "v", "l", "h", "i", "y", "it"];
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var th = document.getElementById("th-" + k);
+        if (th) {
+          var icon = th.querySelector(".sort-icon");
+          if (k === currentSortKey) {
+            th.classList.add("active-sort");
+            if (icon) icon.textContent = currentSortDir === "asc" ? "▲" : "▼";
+          } else {
+            th.classList.remove("active-sort");
+            if (icon) icon.textContent = "⇅";
+          }
+        }
+      }
+    }
+
+    function renderTableRows() {
+      var tbody = document.getElementById("kw-tbody");
+      if (!tbody || !cachedData || cachedData.length === 0) return;
+
+      var topList = cachedData.slice(0, 100);
+
+      // Sort items
+      topList.sort(function(a, b) {
+        var valA = getSortValue(a, currentSortKey);
+        var valB = getSortValue(b, currentSortKey);
+        if (typeof valA === "string") {
+          return currentSortDir === "asc" ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        }
+        return currentSortDir === "asc" ? (valA - valB) : (valB - valA);
+      });
+
+      tbody.innerHTML = "";
+      for (var j = 0; j < topList.length; j++) {
+        var kw = topList[j];
+        var kName = kw.k || kw.keyword || "";
+        var kwSlug = toSlug(kw.k || kw.keyword || kName);
+        var kVol = Number(kw.v ?? kw.search_volume ?? kw.avg_monthly_searches ?? 0).toLocaleString();
+        var kLow = Number(kw.l ?? kw.top_of_page_bid_low ?? 0).toFixed(2);
+        var kHigh = Number(kw.h ?? kw.top_of_page_bid_high ?? 0).toFixed(2);
+        var kComp = String(kw.co ?? kw.competition ?? "HIGH");
+        var kCompIdx = Number(kw.i ?? kw.competition_index ?? 0);
+        var kYoy = Number(kw.y ?? kw.yoy_change ?? kw.yoy_growth_percent ?? 0);
+        var kIntent = String(kw.it ?? kw.intent ?? "commercial");
+
+        var compText = kComp + (kCompIdx > 0 ? " (" + kCompIdx + ")" : "");
+        var yoyText = (kYoy > 0 ? "+" : "") + kYoy + "%";
+
+        var tr = document.createElement("tr");
+        tr.innerHTML = '<td class="td-kw">' +
+          '<a href="https://www.xiaoflow.com/keywords/' + kwSlug + '" target="_blank" class="kw-table-link">' +
+            '<span>' + kName + '</span>' +
+            '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="kw-ext-icon"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>' +
+          '</a>' +
+        '</td>' +
+        '<td class="td-vol">' + kVol + '</td>' +
+        '<td class="td-num">$' + kLow + '</td>' +
+        '<td class="td-num">$' + kHigh + '</td>' +
+        '<td><span class="badge" style="background:#f1f5f9; color:#334155;">' + compText + '</span></td>' +
+        '<td class="td-num" style="font-weight:600; color:' + (kYoy > 0 ? "#16a34a" : (kYoy < 0 ? "#dc2626" : "var(--muted)")) + '">' + yoyText + '</td>' +
+        '<td><span class="badge tag-blue">' + kIntent + '</span></td>';
+        tbody.appendChild(tr);
+      }
+    }
+
+    function getSortValue(item, key) {
+      if (key === "k") return String(item.k || item.keyword || "").toLowerCase();
+      if (key === "v") return Number(item.v ?? item.search_volume ?? item.avg_monthly_searches ?? 0);
+      if (key === "l") return Number(item.l ?? item.top_of_page_bid_low ?? 0);
+      if (key === "h") return Number(item.h ?? item.top_of_page_bid_high ?? 0);
+      if (key === "i") return Number(item.i ?? item.competition_index ?? 0);
+      if (key === "y") return Number(item.y ?? item.yoy_change ?? item.yoy_growth_percent ?? 0);
+      if (key === "it") return String(item.it ?? item.intent ?? "").toLowerCase();
+      return 0;
+    }
+
     function renderDashboard(input) {
       try {
         var data = parseData(input);
         if (!data || !Array.isArray(data) || data.length === 0) return;
+        cachedData = data;
 
         var main = data[0] || {};
         var kwName = main.k || main.keyword || "Keyword Overview";
@@ -476,41 +612,13 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
 
         renderSvgChart(history);
 
-        var tbody = document.getElementById("kw-tbody");
-        if (tbody) {
-          tbody.innerHTML = "";
-          var topList = data.slice(0, 100);
+        var elCount = document.getElementById("table-count");
+        if (elCount) elCount.textContent = Math.min(data.length, 100) + " keywords";
 
-          var elCount = document.getElementById("table-count");
-          if (elCount) elCount.textContent = topList.length + " keywords";
+        var elFooterText = document.getElementById("footer-count-text");
+        if (elFooterText) elFooterText.textContent = "Showing Top " + Math.min(data.length, 100) + " high-intent keyword opportunities";
 
-          var elFooterText = document.getElementById("footer-count-text");
-          if (elFooterText) elFooterText.textContent = "Showing Top " + topList.length + " high-intent keyword opportunities";
-
-          for (var j = 0; j < topList.length; j++) {
-            var kw = topList[j];
-            var kName = kw.k || kw.keyword || "";
-            var kwSlug = toSlug(kw.k || kw.keyword || kName);
-            var kVol = Number(kw.v ?? kw.search_volume ?? kw.avg_monthly_searches ?? 0).toLocaleString();
-            var kLow = Number(kw.l ?? kw.top_of_page_bid_low ?? 0).toFixed(2);
-            var kHigh = Number(kw.h ?? kw.top_of_page_bid_high ?? 0).toFixed(2);
-            var kComp = String(kw.co ?? kw.competition ?? "HIGH");
-            var kIntent = String(kw.it ?? kw.intent ?? "commercial");
-
-            var tr = document.createElement("tr");
-            tr.innerHTML = '<td class="td-kw">' +
-              '<a href="https://www.xiaoflow.com/keywords/' + kwSlug + '" target="_blank" class="kw-table-link">' +
-                '<span>' + kName + '</span>' +
-                '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="kw-ext-icon"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>' +
-              '</a>' +
-            '</td>' +
-            '<td class="td-vol">' + kVol + '</td>' +
-            '<td class="td-cpc">$' + kLow + ' - $' + kHigh + '</td>' +
-            '<td><span class="badge" style="background:#f1f5f9; color:#334155;">' + kComp + '</span></td>' +
-            '<td><span class="badge tag-blue">' + kIntent + '</span></td>';
-            tbody.appendChild(tr);
-          }
-        }
+        renderTableRows();
       } catch (err) {
         console.error("XiaoFlow Widget Render Error:", err);
       }
