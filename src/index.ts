@@ -1,4 +1,4 @@
-import { MCP_APP_HTML_WIDGET } from "./app-widget";
+import { MCP_APP_HTML_WIDGET } from "./app-widget.js";
 import { formatXiaoFlowReport } from "./format-report.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
@@ -294,7 +294,7 @@ export class McpSession extends DurableObject {
         console.warn(`[DO ${this.ctx.id}] Message received but no active transport/server`);
         const storedKey: string | undefined = await this.ctx.storage.get("apiKey");
         if (storedKey) {
-            this.server = this.createServerInstance(storedKey);
+            this.server = this.createServerInstance(storedKey, this.ctx.id.toString());
         }
         return new Response("Session state lost. Please reconnect SSE.", { 
             status: 410, 
@@ -327,7 +327,7 @@ export class McpSession extends DurableObject {
     return new Response(`MCP DO Route Not Found: ${method} ${pathname}`, { status: 404, headers: corsHeaders });
   }
 
-  private createServerInstance(apiKey: string) {
+  private createServerInstance(apiKey: string, sessionKey: string = "default") {
     const server = new Server(
       SERVER_INFO,
       { capabilities: { tools: {}, resources: {}, prompts: {} } }
@@ -346,11 +346,11 @@ export class McpSession extends DurableObject {
       }
     });
 
-    this.setupHandlers(server, axiosInstance, apiKey);
+    this.setupHandlers(server, axiosInstance, apiKey, sessionKey);
     return server;
   }
 
-  private setupHandlers(server: Server, axiosInstance: any, apiKey: string = "") {
+  private setupHandlers(server: Server, axiosInstance: any, apiKey: string = "", sessionKey: string = "default") {
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: enhanceTools([
         {
@@ -613,7 +613,8 @@ export class McpSession extends DurableObject {
       const toolArgs = (args || {}) as Record<string, unknown>;
       const effectiveKey = ((toolArgs.api_key as string) || (toolArgs.apiKey as string) || apiKey || "").trim();
       const reqConfig = effectiveKey ? { headers: { Authorization: `Bearer ${effectiveKey}` } } : {};
-      const attachUi = canShowUiForSession(sessionKey, name, toolArgs);
+      const effectiveSessionKey = String((toolArgs.session_id as string) || (toolArgs.sessionId as string) || sessionKey || effectiveKey || "default").trim();
+      const attachUi = canShowUiForSession(effectiveSessionKey, name, toolArgs);
       try {
         switch (name) {
           case "discover_keywords": {
