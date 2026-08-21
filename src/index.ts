@@ -31,7 +31,38 @@ const WIDGET_CSP = {
 };
 
 
-function toolResult(data: unknown, isError = false, toolName = "") {
+const sessionUiTracker = new Map<string, number>();
+
+function canShowUiForSession(sessionKey: string, toolName: string, args: Record<string, unknown>): boolean {
+  // Only show UI for single keyword metric queries or related keyword lookups
+  const isTargetTool = toolName === "get_keyword_metrics" || toolName === "get_related_keywords" || toolName === "discover_keywords";
+  if (!isTargetTool) return false;
+
+  // Single keyword check: batch lookups (multiple keywords) do not display the single-keyword UI
+  if (toolName === "get_keyword_metrics") {
+    const rawKw = args.keywords || args.keyword || args.seed || [];
+    const count = Array.isArray(rawKw) ? rawKw.length : (rawKw ? 1 : 0);
+    if (count > 1) return false;
+  }
+
+  if (toolName === "get_related_keywords" || toolName === "discover_keywords") {
+    const rawSeed = args.seeds || args.seed || args.keyword || [];
+    const count = Array.isArray(rawSeed) ? rawSeed.length : (rawSeed ? 1 : 0);
+    if (count > 1) return false;
+  }
+
+  // Session-once rule: ensure UI is only attached at most ONCE in the same conversation session
+  const cleanKey = String(sessionKey || "default").trim();
+  const currentCount = sessionUiTracker.get(cleanKey) || 0;
+  if (currentCount >= 1) {
+    return false;
+  }
+
+  sessionUiTracker.set(cleanKey, currentCount + 1);
+  return true;
+}
+
+function toolResult(data: unknown, isError = false, toolName = "", attachUi = false) {
   const structuredContent =
     data !== null && typeof data === "object" && !Array.isArray(data)
       ? data as Record<string, unknown>
@@ -39,11 +70,8 @@ function toolResult(data: unknown, isError = false, toolName = "") {
 
   const formattedText = isError ? JSON.stringify(data) : formatXiaoFlowReport(data, toolName);
 
-  // Prevent duplicate UI widgets in the same conversation when AI invokes multiple tools
-  const attachUi = !isError && toolName !== "get_related_keywords" && toolName !== "get_quota" && toolName !== "get_keyword_expansion_status";
-
   return {
-    ...(attachUi ? {
+    ...(attachUi && !isError ? {
       _meta: {
         ui: {
           resourceUri: "ui://xiaoflow/keyword-dashboard-v3",
@@ -146,12 +174,13 @@ export class McpSession extends DurableObject {
     // works across Worker isolates and avoids pinning HTTP clients to one object.
     if (pathname === "/mcp") {
       const apiKey = request.headers.get("X-Xiaoflow-Api-Key") || "";
+      const sessionKey = request.headers.get("Mcp-Session-Id") || request.headers.get("X-Mcp-Session-Id") || url.searchParams.get("sessionId") || this.ctx.id.toString() || apiKey;
 
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
-      const server = this.createServerInstance(apiKey);
+      const server = this.createServerInstance(apiKey, sessionKey);
       await server.connect(transport);
 
       const reqHeaders = new Headers(request.headers);
@@ -181,7 +210,7 @@ export class McpSession extends DurableObject {
 
       // 1. Initialize transport and server
       this.transport = new HonoSseTransport(sessionId);
-      this.server = this.createServerInstance(apiKey);
+      this.server = this.createServerInstance(apiKey, sessionId);
 
       const encoder = new TextEncoder();
       const stream = new ReadableStream({
@@ -584,6 +613,7 @@ export class McpSession extends DurableObject {
       const toolArgs = (args || {}) as Record<string, unknown>;
       const effectiveKey = ((toolArgs.api_key as string) || (toolArgs.apiKey as string) || apiKey || "").trim();
       const reqConfig = effectiveKey ? { headers: { Authorization: `Bearer ${effectiveKey}` } } : {};
+      const attachUi = canShowUiForSession(sessionKey, name, toolArgs);
       try {
         switch (name) {
           case "discover_keywords": {
@@ -594,7 +624,7 @@ export class McpSession extends DurableObject {
               page_size: toolArgs.page_size || 100,
             });
             const response = await axiosInstance.post("/api/v1/keywords/ideas", payload, reqConfig);
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "get_keyword_metrics": {
             const rawKw = toolArgs.keywords || toolArgs.keyword || toolArgs.seed || [];
@@ -627,17 +657,17 @@ export class McpSession extends DurableObject {
                   if (k && !mergedMap.has(k)) mergedMap.set(k, item);
                 }
                 const mergedList = Array.from(mergedMap.values());
-                return toolResult({ ...(batchRes.data || {}), data: mergedList }, false, name);
+                return toolResult({ ...(batchRes.data || {}), data: mergedList }, false, name, attachUi);
               }
-              return toolResult(batchRes.data, false, name);
+              return toolResult(batchRes.data, false, name, attachUi);
             }
 
             const response = await batchPromise;
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "get_related_keywords": {
             const response = await axiosInstance.post("/api/v1/keywords/ideas", relatedKeywordPayload(toolArgs), reqConfig);
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "bulk_keyword_metrics": {
             const keywords = Array.isArray(toolArgs.keywords) ? toolArgs.keywords : [];
@@ -645,7 +675,7 @@ export class McpSession extends DurableObject {
               throw new McpError(ErrorCode.InvalidParams, "keywords must contain 1 to 1,000 items");
             }
             const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "start_keyword_expansion": {
             const seeds = (Array.isArray(toolArgs.seeds) ? toolArgs.seeds : (toolArgs.seed ? [toolArgs.seed] : (toolArgs.keyword ? [toolArgs.keyword] : ["rings"]))).map(String).filter(Boolean);
@@ -741,12 +771,12 @@ export class McpSession extends DurableObject {
               const response = await axiosInstance.get("/api/v1/websites", {
                 params: { ...params, site: domain },
               });
-              return toolResult(response.data, false, name);
+              return toolResult(response.data, false, name, attachUi);
             }
             const response = await axiosInstance.get("/api/v1/keywords", {
               params: apiQueryParams(toolArgs),
             });
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "get_domain_stats": {
             const domain = normalizeDomainInput(String(toolArgs.domain || ""));
@@ -758,7 +788,7 @@ export class McpSession extends DurableObject {
               `/api/v1/websites/${encodeURIComponent(domain)}`,
               { params }
             );
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "list_domain_keywords": {
             const domain = normalizeDomainInput(String(toolArgs.domain || ""));
@@ -770,7 +800,7 @@ export class McpSession extends DurableObject {
               `/api/v1/websites/${encodeURIComponent(domain)}/keywords`,
               { params }
             );
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "get_keyword_details": {
             const { slug, ...rest } = toolArgs;
@@ -778,11 +808,11 @@ export class McpSession extends DurableObject {
               ...rest,
               keyword: String(slug).replace(/-/g, " "),
             }));
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           case "bulk_keyword_lookup": {
             const response = await axiosInstance.post("/api/v1/keywords/batch-metrics", keywordApiPayload(toolArgs));
-            return toolResult(response.data, false, name);
+            return toolResult(response.data, false, name, attachUi);
           }
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
