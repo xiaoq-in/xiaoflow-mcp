@@ -38,7 +38,7 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       -webkit-font-smoothing: antialiased;
     }
     .container {
-      max-width: 960px;
+      max-width: 980px;
       margin: 0 auto;
       display: flex;
       flex-direction: column;
@@ -189,7 +189,7 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       color: var(--muted);
     }
     .table-scroll {
-      max-height: 400px;
+      max-height: 420px;
       overflow-y: auto;
     }
     table {
@@ -370,25 +370,28 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
           <thead>
             <tr>
               <th onclick="handleSort('k')" id="th-k">
-                <div class="th-content"><span>Keyword</span><span class="sort-icon">⇅</span></div>
+                <div class="th-content"><span>KEYWORD</span><span class="sort-icon">⇅</span></div>
               </th>
               <th onclick="handleSort('v')" id="th-v" class="active-sort">
-                <div class="th-content"><span>Search Volume</span><span class="sort-icon">▼</span></div>
-              </th>
-              <th onclick="handleSort('l')" id="th-l">
-                <div class="th-content"><span>Low Bid</span><span class="sort-icon">⇅</span></div>
-              </th>
-              <th onclick="handleSort('h')" id="th-h">
-                <div class="th-content"><span>High Bid</span><span class="sort-icon">⇅</span></div>
+                <div class="th-content"><span>VOLUME</span><span class="sort-icon">▼</span></div>
               </th>
               <th onclick="handleSort('i')" id="th-i">
-                <div class="th-content"><span>Competition</span><span class="sort-icon">⇅</span></div>
+                <div class="th-content"><span>COMPETITION (INDEXED VALUE)</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('co')" id="th-co">
+                <div class="th-content"><span>COMPETITION</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('l')" id="th-l">
+                <div class="th-content"><span>MIN CPC</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('h')" id="th-h">
+                <div class="th-content"><span>MAX CPC</span><span class="sort-icon">⇅</span></div>
+              </th>
+              <th onclick="handleSort('m3')" id="th-m3">
+                <div class="th-content"><span>3M CHANGE</span><span class="sort-icon">⇅</span></div>
               </th>
               <th onclick="handleSort('y')" id="th-y">
-                <div class="th-content"><span>YoY Change</span><span class="sort-icon">⇅</span></div>
-              </th>
-              <th onclick="handleSort('it')" id="th-it">
-                <div class="th-content"><span>Intent</span><span class="sort-icon">⇅</span></div>
+                <div class="th-content"><span>YOY CHANGE</span><span class="sort-icon">⇅</span></div>
               </th>
             </tr>
           </thead>
@@ -483,14 +486,14 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
         currentSortDir = currentSortDir === "desc" ? "asc" : "desc";
       } else {
         currentSortKey = key;
-        currentSortDir = (key === "k" || key === "it") ? "asc" : "desc";
+        currentSortDir = (key === "k" || key === "co") ? "asc" : "desc";
       }
       updateSortHeaderIcons();
       renderTableRows();
     }
 
     function updateSortHeaderIcons() {
-      var keys = ["k", "v", "l", "h", "i", "y", "it"];
+      var keys = ["k", "v", "i", "co", "l", "h", "m3", "y"];
       for (var i = 0; i < keys.length; i++) {
         var k = keys[i];
         var th = document.getElementById("th-" + k);
@@ -529,14 +532,14 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
         var kName = kw.k || kw.keyword || "";
         var kwSlug = toSlug(kw.k || kw.keyword || kName);
         var kVol = Number(kw.v ?? kw.search_volume ?? kw.avg_monthly_searches ?? 0).toLocaleString();
-        var kLow = Number(kw.l ?? kw.top_of_page_bid_low ?? 0).toFixed(2);
-        var kHigh = Number(kw.h ?? kw.top_of_page_bid_high ?? 0).toFixed(2);
-        var kComp = String(kw.co ?? kw.competition ?? "HIGH");
-        var kCompIdx = Number(kw.i ?? kw.competition_index ?? 0);
-        var kYoy = Number(kw.y ?? kw.yoy_change ?? kw.yoy_growth_percent ?? 0);
-        var kIntent = String(kw.it ?? kw.intent ?? "commercial");
+        var kCompIdx = Number(kw.i ?? kw.competition_index ?? kw.cmp_idx ?? 0);
+        var kComp = String(kw.co ?? kw.competition ?? kw.cmp ?? "HIGH");
+        var kLow = Number(kw.l ?? kw.top_of_page_bid_low ?? kw.bid_l ?? 0).toFixed(2);
+        var kHigh = Number(kw.h ?? kw.top_of_page_bid_high ?? kw.bid_h ?? 0).toFixed(2);
+        var k3m = Number(kw.m3 ?? kw.three_month_change ?? kw.c_3m ?? 0);
+        var kYoy = Number(kw.y ?? kw.yoy_change ?? kw.yoy_growth_percent ?? kw.c_yoy ?? 0);
 
-        var compText = kComp + (kCompIdx > 0 ? " (" + kCompIdx + ")" : "");
+        var m3Text = (k3m > 0 ? "+" : "") + k3m + "%";
         var yoyText = (kYoy > 0 ? "+" : "") + kYoy + "%";
 
         var tr = document.createElement("tr");
@@ -547,11 +550,12 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
           '</a>' +
         '</td>' +
         '<td class="td-vol">' + kVol + '</td>' +
+        '<td class="td-num">' + kCompIdx + '</td>' +
+        '<td><span class="badge" style="background:#f1f5f9; color:#334155;">' + kComp + '</span></td>' +
         '<td class="td-num">$' + kLow + '</td>' +
         '<td class="td-num">$' + kHigh + '</td>' +
-        '<td><span class="badge" style="background:#f1f5f9; color:#334155;">' + compText + '</span></td>' +
-        '<td class="td-num" style="font-weight:600; color:' + (kYoy > 0 ? "#16a34a" : (kYoy < 0 ? "#dc2626" : "var(--muted)")) + '">' + yoyText + '</td>' +
-        '<td><span class="badge tag-blue">' + kIntent + '</span></td>';
+        '<td class="td-num" style="font-weight:600; color:' + (k3m > 0 ? "#16a34a" : (k3m < 0 ? "#dc2626" : "var(--muted)")) + '">' + m3Text + '</td>' +
+        '<td class="td-num" style="font-weight:600; color:' + (kYoy > 0 ? "#16a34a" : (kYoy < 0 ? "#dc2626" : "var(--muted)")) + '">' + yoyText + '</td>';
         tbody.appendChild(tr);
       }
     }
@@ -559,11 +563,12 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
     function getSortValue(item, key) {
       if (key === "k") return String(item.k || item.keyword || "").toLowerCase();
       if (key === "v") return Number(item.v ?? item.search_volume ?? item.avg_monthly_searches ?? 0);
-      if (key === "l") return Number(item.l ?? item.top_of_page_bid_low ?? 0);
-      if (key === "h") return Number(item.h ?? item.top_of_page_bid_high ?? 0);
-      if (key === "i") return Number(item.i ?? item.competition_index ?? 0);
-      if (key === "y") return Number(item.y ?? item.yoy_change ?? item.yoy_growth_percent ?? 0);
-      if (key === "it") return String(item.it ?? item.intent ?? "").toLowerCase();
+      if (key === "i") return Number(item.i ?? item.competition_index ?? item.cmp_idx ?? 0);
+      if (key === "co") return String(item.co ?? item.competition ?? item.cmp ?? "").toLowerCase();
+      if (key === "l") return Number(item.l ?? item.top_of_page_bid_low ?? item.bid_l ?? 0);
+      if (key === "h") return Number(item.h ?? item.top_of_page_bid_high ?? item.bid_h ?? 0);
+      if (key === "m3") return Number(item.m3 ?? item.three_month_change ?? item.c_3m ?? 0);
+      if (key === "y") return Number(item.y ?? item.yoy_change ?? item.yoy_growth_percent ?? item.c_yoy ?? 0);
       return 0;
     }
 
@@ -576,11 +581,11 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
         var main = data[0] || {};
         var kwName = main.k || main.keyword || "Keyword Overview";
         var vol = Number(main.v ?? main.search_volume ?? main.avg_monthly_searches ?? 0);
-        var low = Number(main.l ?? main.top_of_page_bid_low ?? 0);
-        var high = Number(main.h ?? main.top_of_page_bid_high ?? 0);
-        var comp = String(main.co ?? main.competition ?? "HIGH");
-        var compIdx = Number(main.i ?? main.competition_index ?? 88);
-        var yoy = Number(main.y ?? main.yoy_change ?? 0);
+        var low = Number(main.l ?? main.top_of_page_bid_low ?? main.bid_l ?? 0);
+        var high = Number(main.h ?? main.top_of_page_bid_high ?? main.bid_h ?? 0);
+        var comp = String(main.co ?? main.competition ?? main.cmp ?? "HIGH");
+        var compIdx = Number(main.i ?? main.competition_index ?? main.cmp_idx ?? 88);
+        var yoy = Number(main.y ?? main.yoy_change ?? main.c_yoy ?? 0);
         var history = main.t || main.history || [];
 
         var elTitle = document.getElementById("kw-title");

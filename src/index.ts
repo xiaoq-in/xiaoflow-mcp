@@ -46,7 +46,7 @@ function toolResult(data: unknown, isError = false, toolName = "") {
     ...(attachUi ? {
       _meta: {
         ui: {
-          resourceUri: "ui://xiaoflow/keyword-dashboard-v2",
+          resourceUri: "ui://xiaoflow/keyword-dashboard-v3",
         },
       },
     } : {}),
@@ -499,7 +499,7 @@ export class McpSession extends DurableObject {
     }));
 
     const resourceDef = {
-      uri: "ui://xiaoflow/keyword-dashboard-v2",
+      uri: "ui://xiaoflow/keyword-dashboard-v3",
       name: "XiaoFlow Keyword Intelligence Dashboard",
       mimeType: "text/html;profile=mcp-app",
       description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
@@ -520,7 +520,7 @@ export class McpSession extends DurableObject {
     };
 
     const templateDef = {
-      uriTemplate: "ui://xiaoflow/keyword-dashboard-v2",
+      uriTemplate: "ui://xiaoflow/keyword-dashboard-v3",
       name: "XiaoFlow Keyword Intelligence Dashboard",
       mimeType: "text/html;profile=mcp-app",
       description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
@@ -554,7 +554,7 @@ export class McpSession extends DurableObject {
         return {
           contents: [
             {
-              uri: uri || "ui://xiaoflow/keyword-dashboard-v2",
+              uri: uri || "ui://xiaoflow/keyword-dashboard-v3",
               mimeType: "text/html;profile=mcp-app",
               text: MCP_APP_HTML_WIDGET,
               domain: WIDGET_DOMAIN,
