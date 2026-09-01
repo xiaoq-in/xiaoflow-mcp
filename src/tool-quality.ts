@@ -192,31 +192,35 @@ export function enhanceTools(tools: ToolDefinition[]): ToolDefinition[] {
       ]),
     );
     const mutates = tool.name === "start_keyword_expansion";
+    const showKeywordUi = [
+      "get_keyword_metrics",
+      "get_related_keywords",
+      "discover_keywords",
+      "bulk_keyword_metrics",
+      "bulk_keyword_lookup",
+      "get_keyword_details",
+    ].includes(tool.name);
+    const widgetCsp = {
+      connectDomains: ["https://api.xiaoflow.com", "https://mcp.xiaoflow.com", "https://www.xiaoflow.com"],
+      resourceDomains: ["https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com", "https://fonts.gstatic.com"],
+    };
 
     return {
       ...tool,
       title: TITLES[tool.name] ?? tool.name,
-      _meta: {
-        domain: "mcp.xiaoflow.com",
-        csp: {
-          "default-src": ["'self'"],
-          "script-src": ["'self'", "'unsafe-inline'"],
-          "style-src": ["'self'", "'unsafe-inline'"],
-          "img-src": ["'self'", "data:", "https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com"],
-          "connect-src": ["'self'", "https://api.xiaoflow.com", "https://mcp.xiaoflow.com"]
-        },
-        ui: {
-          resourceUri: "ui://xiaoflow/keyword-dashboard",
-          domain: "mcp.xiaoflow.com",
-          csp: {
-            "default-src": ["'self'"],
-            "script-src": ["'self'", "'unsafe-inline'"],
-            "style-src": ["'self'", "'unsafe-inline'"],
-            "img-src": ["'self'", "data:", "https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com"],
-            "connect-src": ["'self'", "https://api.xiaoflow.com", "https://mcp.xiaoflow.com"]
+      _meta: showKeywordUi
+        ? {
+            ui: {
+              resourceUri: "ui://xiaoflow/keyword-dashboard-v3",
+              csp: widgetCsp,
+            },
+            "openai/widgetCSP": {
+              connect_domains: widgetCsp.connectDomains,
+              resource_domains: widgetCsp.resourceDomains,
+            },
+            "openai/outputTemplate": "ui://xiaoflow/keyword-dashboard-v3",
           }
-        }
-      },
+        : {},
       description: tool.name === "get_quota" 
         ? tool.description 
         : (tool.description + " When presenting output to the user, you MUST include the 48-month search trend chart image markdown ![Search Volume Trend](https://quickchart.io/chart?...) from the tool result, along with the formatted KPI and keyword table."),

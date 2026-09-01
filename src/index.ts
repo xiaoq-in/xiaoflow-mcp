@@ -17,26 +17,10 @@ import { DurableObject } from "cloudflare:workers";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { enhanceTools, SERVER_INFO } from "./tool-quality.js";
 
-const WIDGET_DOMAIN = "mcp.xiaoflow.com";
-const WIDGET_CSP = {
-  "default-src": ["'self'"],
-  "script-src": ["'self'", "'unsafe-inline'"],
-  "style-src": ["'self'", "'unsafe-inline'"],
-  "img-src": ["'self'", "data:", "https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com"],
-  "connect-src": ["'self'", "https://api.xiaoflow.com", "https://mcp.xiaoflow.com"],
-  "font-src": ["'self'", "data:", "https://fonts.gstatic.com"],
-  "frame-src": ["'none'"],
-  "object-src": ["'none'"],
-  "base-uri": ["'self'"]
-};
-
-
 const sessionUiTracker = new Map<string, number>();
 
 function canShowUiForSession(sessionKey: string, toolName: string, args: Record<string, unknown>): boolean {
-  // Only show UI for single keyword metric queries or related keyword lookups
-  const isTargetTool = toolName === "get_keyword_metrics" || toolName === "get_related_keywords" || toolName === "discover_keywords";
-  if (!isTargetTool) return false;
+  if (!KEYWORD_UI_TOOLS.has(toolName)) return false;
 
   // Single keyword check: batch lookups (multiple keywords) do not display the single-keyword UI
   if (toolName === "get_keyword_metrics") {
@@ -63,31 +47,53 @@ function canShowUiForSession(sessionKey: string, toolName: string, args: Record<
 }
 
 function toolResult(data: unknown, isError = false, toolName = "", attachUi = false) {
-  const structuredContent =
-    data !== null && typeof data === "object" && !Array.isArray(data)
-      ? data as Record<string, unknown>
-      : { success: !isError, data };
-
   const formattedText = isError ? JSON.stringify(data) : formatXiaoFlowReport(data, toolName);
+  const structured = data && typeof data === "object" ? (data as Record<string, unknown>) : { result: data };
 
   return {
-    ...(attachUi && !isError ? {
-      _meta: {
-        ui: {
-          resourceUri: "ui://xiaoflow/keyword-dashboard-v3",
-        },
-      },
-    } : {}),
     content: [{ type: "text" as const, text: formattedText }],
-    structuredContent,
-    data: structuredContent,
+    structuredContent: structured,
     ...(isError ? { isError: true } : {}),
+    ...(attachUi && !isError ? { _meta: widgetUiMeta(true) } : {}),
   };
 }
 
 const MCP_RESOURCE = "https://mcp.xiaoflow.com/mcp";
+const MCP_SSE_RESOURCE = "https://mcp.xiaoflow.com/sse";
 const AUTHORIZATION_SERVER = "https://www.xiaoflow.com";
 const PROTECTED_RESOURCE_METADATA = "https://mcp.xiaoflow.com/.well-known/oauth-protected-resource";
+const WIDGET_URI = "ui://xiaoflow/keyword-dashboard-v3";
+const KEYWORD_UI_TOOLS = new Set([
+  "get_keyword_metrics",
+  "get_related_keywords",
+  "discover_keywords",
+  "bulk_keyword_metrics",
+  "bulk_keyword_lookup",
+  "get_keyword_details",
+]);
+
+function widgetCsp() {
+  return {
+    connectDomains: ["https://api.xiaoflow.com", "https://mcp.xiaoflow.com", "https://www.xiaoflow.com"],
+    resourceDomains: ["https://quickchart.io", "https://www.xiaoflow.com", "https://mcp.xiaoflow.com", "https://fonts.gstatic.com"],
+  };
+}
+
+function widgetUiMeta(includeResourceUri = true) {
+  const csp = widgetCsp();
+  const ui: Record<string, unknown> = { csp };
+  if (includeResourceUri) {
+    ui.resourceUri = WIDGET_URI;
+  }
+  return {
+    ui,
+    "openai/widgetCSP": {
+      connect_domains: csp.connectDomains,
+      resource_domains: csp.resourceDomains,
+    },
+    ...(includeResourceUri ? { "openai/outputTemplate": WIDGET_URI } : {}),
+  };
+}
 
 function brandQueryParam(brand: unknown): 0 | 1 {
   if (brand === 1 || brand === "1" || brand === true) return 1;
@@ -199,8 +205,10 @@ export class McpSession extends DurableObject {
       if (authHeader && authHeader.startsWith("Bearer ")) {
         apiKey = authHeader.substring(7);
       }
-      
-      apiKey = apiKey || this._env.XIAOFLOW_API_KEY;
+
+      if (!apiKey) {
+        return oauthErrorResponse("invalid_token", "Sign in with your XiaoFlow account to use MCP.");
+      }
 
       const sessionId = this.ctx.id.toString();
       const externalBaseUrl = request.headers.get("X-External-Base-Url");
@@ -528,45 +536,19 @@ export class McpSession extends DurableObject {
     }));
 
     const resourceDef = {
-      uri: "ui://xiaoflow/keyword-dashboard-v3",
+      uri: WIDGET_URI,
       name: "XiaoFlow Keyword Intelligence Dashboard",
       mimeType: "text/html;profile=mcp-app",
       description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
-      domain: WIDGET_DOMAIN,
-      csp: WIDGET_CSP,
-      _meta: {
-        domain: WIDGET_DOMAIN,
-        csp: WIDGET_CSP,
-        ui: {
-          domain: WIDGET_DOMAIN,
-          csp: WIDGET_CSP,
-        },
-        widget: {
-          domain: WIDGET_DOMAIN,
-          csp: WIDGET_CSP,
-        }
-      },
+      _meta: widgetUiMeta(true),
     };
 
     const templateDef = {
-      uriTemplate: "ui://xiaoflow/keyword-dashboard-v3",
+      uriTemplate: WIDGET_URI,
       name: "XiaoFlow Keyword Intelligence Dashboard",
       mimeType: "text/html;profile=mcp-app",
       description: "Interactive XiaoFlow keyword analytics dashboard with charts and table widgets",
-      domain: WIDGET_DOMAIN,
-      csp: WIDGET_CSP,
-      _meta: {
-        domain: WIDGET_DOMAIN,
-        csp: WIDGET_CSP,
-        ui: {
-          domain: WIDGET_DOMAIN,
-          csp: WIDGET_CSP,
-        },
-        widget: {
-          domain: WIDGET_DOMAIN,
-          csp: WIDGET_CSP,
-        }
-      },
+      _meta: widgetUiMeta(true),
     };
 
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({
@@ -583,23 +565,10 @@ export class McpSession extends DurableObject {
         return {
           contents: [
             {
-              uri: uri || "ui://xiaoflow/keyword-dashboard-v3",
+              uri: uri || WIDGET_URI,
               mimeType: "text/html;profile=mcp-app",
               text: MCP_APP_HTML_WIDGET,
-              domain: WIDGET_DOMAIN,
-              csp: WIDGET_CSP,
-              _meta: {
-                domain: WIDGET_DOMAIN,
-                csp: WIDGET_CSP,
-                ui: {
-                  domain: WIDGET_DOMAIN,
-                  csp: WIDGET_CSP,
-                },
-                widget: {
-                  domain: WIDGET_DOMAIN,
-                  csp: WIDGET_CSP,
-                }
-              },
+              _meta: widgetUiMeta(true),
             },
           ],
         };
@@ -919,6 +888,26 @@ function bearerToken(request: Request): string {
     : "";
 }
 
+function extractAccessToken(request: Request): string {
+  const url = new URL(request.url);
+  return bearerToken(request)
+    || (request.headers.get("X-Xiaoflow-Api-Key") || "").trim()
+    || (url.searchParams.get("key") || "").trim();
+}
+
+async function requireUserToken(request: Request, env: Env): Promise<string | Response> {
+  const token = extractAccessToken(request);
+  if (!token) {
+    return oauthErrorResponse("invalid_token", "Sign in with your XiaoFlow account to use MCP.");
+  }
+  const apiBaseUrl = env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
+  const isValid = await validateAccessToken(token, apiBaseUrl);
+  if (!isValid) {
+    return oauthErrorResponse("invalid_token", "Access token is invalid or expired. Please sign in again.");
+  }
+  return token;
+}
+
 async function validateAccessToken(token: string, apiBaseUrl: string): Promise<boolean> {
   if (!token) return false;
   try {
@@ -1049,6 +1038,28 @@ app.get("/.well-known/oauth-protected-resource/mcp", (c) => c.json({
 }, 200, {
   ...getCorsHeaders(c),
   "Cache-Control": "no-cache, no-store, must-revalidate",
+}));
+
+app.get("/.well-known/oauth-protected-resource/sse", (c) => c.json({
+  resource: MCP_SSE_RESOURCE,
+  authorization_servers: ["https://mcp.xiaoflow.com"],
+  scopes_supported: ["openid", "profile", "email", "mcp"],
+  bearer_methods_supported: ["header"],
+  client_id_metadata_document_supported: true,
+  client_id_metadata_documents_supported: true,
+  resource_documentation: "https://www.xiaoflow.com/mcp",
+}, 200, {
+  ...getCorsHeaders(c),
+  "Cache-Control": "no-cache, no-store, must-revalidate",
+}));
+
+app.get("/widget", (c) => new Response(MCP_APP_HTML_WIDGET, {
+  status: 200,
+  headers: {
+    ...getCorsHeaders(c),
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+  },
 }));
 
 const oauthMetadata = (c: any) => c.json({
@@ -1301,21 +1312,34 @@ export default {
             return new Response(null, { status: 204, headers: getCorsHeaders(request) });
         }
 
-        if (pathname === "/mcp") {
-            const token = bearerToken(request) || request.headers.get("X-Xiaoflow-Api-Key") || "";
+        if (pathname === "/mcp" || (pathname === "/sse" && method === "GET")) {
+            const auth = await requireUserToken(request, env);
+            if (auth instanceof Response) {
+                return withCors(auth, request);
+            }
 
-            const apiBaseUrl = env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
-            ctx.waitUntil(validateAccessToken(token, apiBaseUrl).then((isValid) => {
-                if (!isValid) {
-                    console.warn(JSON.stringify({ event: "mcp_token_background_validation_failed" }));
-                }
-            }));
+            if (pathname === "/mcp") {
+                const id = env.MCP_SESSION.newUniqueId();
+                const obj = env.MCP_SESSION.get(id);
+                const forwarded = new Request(request);
+                forwarded.headers.set("X-Xiaoflow-Api-Key", auth);
+                forwarded.headers.set("Authorization", `Bearer ${auth}`);
+                return obj.fetch(forwarded);
+            }
 
-            const id = env.MCP_SESSION.newUniqueId();
-            const obj = env.MCP_SESSION.get(id);
-            const forwarded = new Request(request);
-            forwarded.headers.set("X-Xiaoflow-Api-Key", token);
-            return obj.fetch(forwarded);
+            const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id");
+            let sseId;
+            if (sessionId) {
+                try { sseId = env.MCP_SESSION.idFromString(sessionId); } catch { sseId = env.MCP_SESSION.newUniqueId(); }
+            } else {
+                sseId = env.MCP_SESSION.newUniqueId();
+            }
+            const sseObj = env.MCP_SESSION.get(sseId);
+            const sseRequest = new Request(request);
+            sseRequest.headers.set("X-External-Base-Url", `${url.protocol}//${url.host}`);
+            sseRequest.headers.set("X-Xiaoflow-Api-Key", auth);
+            sseRequest.headers.set("Authorization", `Bearer ${auth}`);
+            return sseObj.fetch(sseRequest);
         }
 
         if (pathname === "/sse" || pathname === "/messages") {

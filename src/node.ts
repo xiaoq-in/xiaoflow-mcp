@@ -247,6 +247,14 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
         },
       },
       {
+        name: "get_quota",
+        description: "Query account balance, remaining compute units (CU), used quota, and daily limits.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+        },
+      },
+      {
         name: "bulk_keyword_lookup",
         description: "Bulk volume/CPC for up to 1,000 keywords.",
         inputSchema: {
@@ -365,6 +373,10 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
             ...rest,
             keyword: String(slug).replace(/-/g, " "),
           }));
+          return toolResult(response.data);
+        }
+        case "get_quota": {
+          const response = await axiosInstance.get("/api/v1/auth/quota");
           return toolResult(response.data);
         }
         case "bulk_keyword_lookup": {

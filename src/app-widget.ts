@@ -718,6 +718,10 @@ export const MCP_APP_HTML_WIDGET = `<!DOCTYPE html>
       if (typeof d === "string") {
         try { d = JSON.parse(d); } catch (err) {}
       }
+      if (d && d.method && String(d.method).indexOf("ui/") === 0 && d.params) {
+        renderDashboard(d.params.toolResult || d.params.toolOutput || d.params);
+        return;
+      }
       renderDashboard(d);
     });
 
