@@ -79,9 +79,81 @@ export function buildChartUrl(title: string, history?: Array<{ y: number; m: num
   return `https://quickchart.io/chart?w=640&h=260&bkg=white&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
 }
 
+function formatExpansionReport(data: any): string {
+  const tid = data.task_id ?? data.taskId ?? data.id ?? "—";
+  const status = String(data.status || (data.success === false ? "failed" : "pending"));
+  const progressRaw = data.progress;
+  const progress = typeof progressRaw === "number"
+    ? progressRaw
+    : Number(progressRaw?.percent ?? 0);
+  const count = data.keywords_count ?? data.found_keywords_count ?? (Array.isArray(data.results) ? data.results.length : 0);
+  let seeds: unknown = data.seeds;
+  if (typeof seeds === "string") {
+    try {
+      seeds = JSON.parse(seeds);
+    } catch {
+      // keep original string
+    }
+  }
+  const seedsText = Array.isArray(seeds) ? seeds.join(", ") : (seeds || data.seed || "—");
+  const depth = data.current_depth ?? data.progress?.current_depth;
+  const maxIter = data.max_iterations ?? data.progress?.max_iterations;
+  const pending = data.pending_count ?? data.progress?.pending_count;
+  const processed = data.processed_count ?? data.progress?.processed_count;
+
+  let report = `## 🚀 XiaoFlow 关键词拓词任务 (#${tid})\n\n` +
+    `| 任务属性 | 状态与进度 |\n` +
+    `| :--- | :--- |\n` +
+    `| 📋 **任务编号** | \`#${tid}\` |\n` +
+    `| 🌱 **种子关键词** | **${seedsText}** |\n` +
+    `| ⚡ **执行状态** | **${status.toUpperCase()}** (${Number(progress) || 0}%) |\n` +
+    `| 🔍 **已发现关键词** | **${count}** 个 |\n`;
+
+  if (depth !== undefined && depth !== null || maxIter !== undefined && maxIter !== null) {
+    report += `| 🔁 **拓展轮次** | **${depth ?? "—"} / ${maxIter ?? "—"}** |\n`;
+  }
+  if (pending !== undefined || processed !== undefined) {
+    report += `| 📦 **队列进度** | 已处理 **${processed ?? 0}** / 待处理 **${pending ?? 0}** |\n`;
+  }
+  report += `\n`;
+
+  if (data.error) {
+    report += `> ⚠️ **错误**: ${data.error}\n\n`;
+  }
+
+  if (data.next_action) {
+    report += `> 🔄 **下一步**: ${data.next_action}\n`;
+  } else {
+    report += `> 🔄 **轮询状态**: 调用 \`get_keyword_expansion_status(task_id=${tid})\` 直到 status 为 completed / processed / failed。未完成前不要把相关词列表当作拓词结果。\n`;
+  }
+  report += `> 🔗 [👉 前往 XiaoFlow 发现中心实时查看与导出](${data.url || "https://www.xiaoflow.com/user/discovery"})\n`;
+
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (results.length > 0) {
+    report += `\n### 🎯 本任务已发现关键词 (Top ${Math.min(results.length, 12)})\n\n`;
+    report += `| 关键词 (Keyword) | 月搜索量 | CPC 出价区间 | 竞争度 |\n`;
+    report += `| :--- | :--- | :--- | :--- |\n`;
+    results.slice(0, 12).forEach((kw: any) => {
+      const name = kw.keyword || kw.k || "";
+      const vol = (kw.search_volume ?? kw.v ?? 0).toLocaleString();
+      const low = Number(kw.top_of_page_bid_low ?? kw.l ?? 0).toFixed(2);
+      const high = Number(kw.top_of_page_bid_high ?? kw.h ?? 0).toFixed(2);
+      const comp = kw.competition ?? kw.co ?? "—";
+      report += `| **${name}** | \`${vol}\` | $${low} - $${high} | ${comp} |\n`;
+    });
+    report += `\n`;
+  }
+
+  return report;
+}
+
 export function formatXiaoFlowReport(data: any, toolName: string): string {
   if (!data || typeof data !== "object") {
     return JSON.stringify(data);
+  }
+
+  if (toolName === "start_keyword_expansion" || toolName === "get_keyword_expansion_status") {
+    return formatExpansionReport(data);
   }
 
   if (toolName === "get_quota" || data.type !== undefined && (data.remaining !== undefined || data.credits !== undefined)) {
@@ -114,21 +186,7 @@ export function formatXiaoFlowReport(data: any, toolName: string): string {
 
   if (keywords.length === 0) {
     if (data.task_id || data.taskId) {
-      const tid = data.task_id || data.taskId;
-      const status = data.status || "pending";
-      const progress = data.progress ?? 0;
-      const count = data.keywords_count ?? data.found_keywords_count ?? 0;
-      const seeds = Array.isArray(data.seeds) ? data.seeds.join(", ") : (data.seed || "—");
-
-      return `## 🚀 XiaoFlow 关键词拓词挖掘任务 (#${tid})\n\n` +
-        `| 任务属性 | 状态与进度 |\n` +
-        `| :--- | :--- |\n` +
-        `| 📋 **任务编号** | \`#${tid}\` |\n` +
-        `| 🌱 **种子关键词** | **${seeds}** |\n` +
-        `| ⚡ **执行状态** | **${status.toUpperCase()}** (${progress}%) |\n` +
-        `| 🔍 **已发现关键词** | **${count}** 个 |\n\n` +
-        `> 🔄 **轮询状态**: 调用 \`get_keyword_expansion_status(task_id=${tid})\` 可获取实时拓展进度与全量关键词数据。\n` +
-        `> 🔗 [👉 前往 XiaoFlow 发现中心实时查看与导出](https://www.xiaoflow.com/user/discovery)\n`;
+      return formatExpansionReport(data);
     }
     return JSON.stringify(data, null, 2);
   }

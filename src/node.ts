@@ -13,6 +13,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
 import { enhanceTools, SERVER_INFO } from "./tool-quality.js";
+import {
+  axiosErrorMessage,
+  expansionStartPayload,
+  normalizeExpansionStatus,
+  normalizeStartedTask,
+  parseSeedList,
+} from "./expansion.js";
 
 function toolResult(data: unknown, isError = false) {
   const structuredContent =
@@ -161,7 +168,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
       },
       {
         name: "start_keyword_expansion",
-        description: "Start an asynchronous breadth-first/round-based keyword expansion.",
+        description: "Start an asynchronous multi-round keyword expansion. Returns task_id and status only — never a related-keyword list. Poll get_keyword_expansion_status until completed/processed/failed.",
         inputSchema: {
           type: "object",
           properties: {
@@ -178,7 +185,7 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
       },
       {
         name: "get_keyword_expansion_status",
-        description: "Poll a round-based expansion task and optionally return its results.",
+        description: "Poll an expansion task by task_id. Returns status, progress percent, depth, and keyword counts. Pass include_results=true only after the task has completed if you need the keyword rows.",
         inputSchema: {
           type: "object",
           properties: {
@@ -313,18 +320,56 @@ function createXiaoflowServer(apiKey: string, apiUrl: string): Server {
           return toolResult(response.data);
         }
         case "start_keyword_expansion": {
-          const response = await axiosInstance.post("/api/v1/keywords/expansions", toolArgs);
-          return toolResult(response.data);
+          const seeds = parseSeedList(toolArgs);
+          if (seeds.length < 1) {
+            throw new McpError(ErrorCode.InvalidParams, "seeds must contain 1 to 20 keywords");
+          }
+          try {
+            const response = await axiosInstance.post(
+              "/api/v1/keywords/bulk-generate",
+              expansionStartPayload(toolArgs, seeds),
+            );
+            const started = normalizeStartedTask(response.data, seeds);
+            if (!started) {
+              return toolResult({
+                success: false,
+                error: response.data?.error || "Expansion task was not created",
+              }, true);
+            }
+            return toolResult(started);
+          } catch (err) {
+            return toolResult({
+              success: false,
+              error: axiosErrorMessage(err, "Failed to start keyword expansion"),
+            }, true);
+          }
         }
         case "get_keyword_expansion_status": {
           const taskId = Number(toolArgs.task_id);
           if (!Number.isInteger(taskId) || taskId < 1) {
             throw new McpError(ErrorCode.InvalidParams, "task_id must be a positive integer");
           }
-          const response = await axiosInstance.get(`/api/v1/keywords/expansions/${taskId}`, {
-            params: toolArgs.include_results ? { sync_metrics: 1 } : { live: 1 },
-          });
-          return toolResult(response.data);
+          const includeResults = toolArgs.include_results === true || toolArgs.include_results === "true";
+          try {
+            const response = await axiosInstance.get(`/api/v1/keywords/bulk-generate/task/${taskId}`, {
+              params: includeResults ? { sync_metrics: "1" } : { live: "1", kick: "1" },
+            });
+            const task = response.data?.data;
+            if (!task || typeof task !== "object") {
+              return toolResult({
+                success: false,
+                task_id: taskId,
+                error: response.data?.error || "Expansion task not found",
+              }, true);
+            }
+            return toolResult(normalizeExpansionStatus(task, taskId, includeResults));
+          } catch (err) {
+            return toolResult({
+              success: false,
+              task_id: taskId,
+              error: axiosErrorMessage(err, "Failed to fetch expansion status"),
+            }, true);
+          }
         }
         case "analyze_url": {
           const site = String(toolArgs.site || "").trim();

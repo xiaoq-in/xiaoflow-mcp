@@ -1,5 +1,12 @@
 import { MCP_APP_HTML_WIDGET } from "./app-widget.js";
 import { formatXiaoFlowReport } from "./format-report.js";
+import {
+  axiosErrorMessage,
+  expansionStartPayload,
+  normalizeExpansionStatus,
+  normalizeStartedTask,
+  parseSeedList,
+} from "./expansion.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -422,7 +429,7 @@ export class McpSession extends DurableObject {
         },
         {
           name: "start_keyword_expansion",
-          description: "Start an asynchronous breadth-first/round-based keyword expansion from one or more seeds.",
+          description: "Start an asynchronous multi-round keyword expansion. Returns task_id and status only — never a related-keyword list. Poll get_keyword_expansion_status until completed/processed/failed.",
           inputSchema: {
             type: "object",
             properties: {
@@ -447,7 +454,7 @@ export class McpSession extends DurableObject {
         },
         {
           name: "get_keyword_expansion_status",
-          description: "Poll a round-based expansion task. Returns progress, depth, counts, provenance and results when requested.",
+          description: "Poll an expansion task by task_id. Returns status (pending/processing/completed/failed), progress percent, depth, and keyword counts. Pass include_results=true only after the task has completed if you need the keyword rows.",
           inputSchema: {
             type: "object",
             properties: {
@@ -648,51 +655,30 @@ export class McpSession extends DurableObject {
             return toolResult(response.data, false, name, attachUi);
           }
           case "start_keyword_expansion": {
-            const seeds = (Array.isArray(toolArgs.seeds) ? toolArgs.seeds : (toolArgs.seed ? [toolArgs.seed] : (toolArgs.keyword ? [toolArgs.keyword] : ["rings"]))).map(String).filter(Boolean);
-            const cleanSeeds = seeds.length > 0 ? seeds.slice(0, 20) : ["rings"];
-            
-            try {
-              const res = await axiosInstance.post("/api/v1/keywords/bulk-generate", {
-                seeds: cleanSeeds,
-                max_iterations: Number(toolArgs.rounds) || Number(toolArgs.max_iterations) || 5,
-                min_search_volume: Number(toolArgs.min_search_volume) || 0,
-                location_id: 2840,
-                language_id: 1000
-              }, reqConfig);
-
-              if (res.data && (res.data.task_id || res.data.taskId)) {
-                const tid = res.data.task_id || res.data.taskId;
-                return toolResult({
-                  success: true,
-                  task_id: tid,
-                  taskId: tid,
-                  status: res.data.status || "pending",
-                  seeds: cleanSeeds,
-                  url: "https://www.xiaoflow.com/user/discovery",
-                }, false, name);
-              }
-            } catch (err) {
-              console.warn("Bulk generate task creation fallback to ideas:", err);
+            const seeds = parseSeedList(toolArgs);
+            if (seeds.length < 1) {
+              throw new McpError(ErrorCode.InvalidParams, "seeds must contain 1 to 20 keywords");
             }
-
-            // Fallback for guest or offline background workers
-            const primarySeed = String(cleanSeeds[0] || "rings").trim();
-            const payload = keywordApiPayload({
-              ...toolArgs,
-              keyword: primarySeed,
-              page: 1,
-              page_size: Math.min(Number(toolArgs.max_keywords) || 100, 500),
-            });
-            const response = await axiosInstance.post("/api/v1/keywords/ideas", payload, reqConfig);
-            return toolResult(response.data || {
-              success: true,
-              task_id: 1,
-              status: "completed",
-              progress: 100,
-              seeds: cleanSeeds,
-              total: response.data?.total || response.data?.data?.length || 0,
-              data: response.data?.data || [],
-            }, false, name);
+            try {
+              const res = await axiosInstance.post(
+                "/api/v1/keywords/bulk-generate",
+                expansionStartPayload(toolArgs, seeds),
+                reqConfig,
+              );
+              const started = normalizeStartedTask(res.data, seeds);
+              if (!started) {
+                return toolResult({
+                  success: false,
+                  error: res.data?.error || "Expansion task was not created",
+                }, true, name);
+              }
+              return toolResult(started, false, name);
+            } catch (err) {
+              return toolResult({
+                success: false,
+                error: axiosErrorMessage(err, "Failed to start keyword expansion"),
+              }, true, name);
+            }
           }
           case "get_quota": {
             try {
@@ -703,33 +689,32 @@ export class McpSession extends DurableObject {
             }
           }
           case "get_keyword_expansion_status": {
-            const taskId = Number(toolArgs.task_id) || 1;
+            const taskId = Number(toolArgs.task_id);
+            if (!Number.isInteger(taskId) || taskId < 1) {
+              throw new McpError(ErrorCode.InvalidParams, "task_id must be a positive integer");
+            }
+            const includeResults = toolArgs.include_results === true || toolArgs.include_results === "true";
             try {
               const res = await axiosInstance.get(`/api/v1/keywords/bulk-generate/task/${taskId}`, {
-                params: { kick: "1", live: "1", sync_metrics: "1" },
-                ...reqConfig
+                params: includeResults ? { sync_metrics: "1" } : { live: "1", kick: "1" },
+                ...reqConfig,
               });
-              if (res.data && res.data.data) {
+              const task = res.data?.data;
+              if (!task || typeof task !== "object") {
                 return toolResult({
-                  success: true,
+                  success: false,
                   task_id: taskId,
-                  status: res.data.data.status || "completed",
-                  progress: res.data.data.progress ?? 100,
-                  keywords_count: res.data.data.found_keywords_count || (res.data.data.results ? res.data.data.results.length : 0),
-                  results: res.data.data.results || [],
-                  data: res.data.data?.results || res.data.data?.data || res.data.data
-                }, false, name);
+                  error: res.data?.error || "Expansion task not found",
+                }, true, name);
               }
+              return toolResult(normalizeExpansionStatus(task, taskId, includeResults), false, name);
             } catch (err) {
-              console.warn("Error fetching bulk task status:", err);
+              return toolResult({
+                success: false,
+                task_id: taskId,
+                error: axiosErrorMessage(err, "Failed to fetch expansion status"),
+              }, true, name);
             }
-            return toolResult({
-              success: true,
-              task_id: taskId,
-              status: "completed",
-              progress: 100,
-              message: "Task complete."
-            });
           }
           case "analyze_url": {
             const site = String(toolArgs.site || "").trim();
