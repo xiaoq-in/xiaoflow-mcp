@@ -183,45 +183,36 @@ export class McpSession extends DurableObject {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Streamable HTTP transport. Each request is intentionally stateless, which
-    // works across Worker isolates and avoids pinning HTTP clients to one object.
-    if (pathname === "/mcp") {
-      const apiKey = request.headers.get("X-Xiaoflow-Api-Key") || "";
-      const sessionKey = request.headers.get("Mcp-Session-Id") || request.headers.get("X-Mcp-Session-Id") || url.searchParams.get("sessionId") || this.ctx.id.toString() || apiKey;
+    const isMcp = pathname === "/mcp";
+    const isSse = pathname === "/sse";
+    const isMessages = pathname === "/messages";
+    const acceptHeader = (request.headers.get("Accept") || "").toLowerCase();
+    const hasSessionHeader = request.headers.has("mcp-session-id") || request.headers.has("x-mcp-session-id") || url.searchParams.has("sessionId");
 
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
-      const server = this.createServerInstance(apiKey, sessionKey);
-      await server.connect(transport);
+    // 1. SSE Handshake (supports BOTH GET /sse AND GET /mcp with event-stream or initial handshake)
+    const isSseHandshake = (isMcp || isSse) && method === "GET" && (
+      isSse ||
+      acceptHeader.includes("text/event-stream") ||
+      !hasSessionHeader
+    );
 
-      const reqHeaders = new Headers(request.headers);
-      reqHeaders.set("Accept", "application/json, text/event-stream");
-      const normalizedRequest = new Request(request, { headers: reqHeaders });
-
-      const response = await transport.handleRequest(normalizedRequest);
-      return withCors(response, request);
-    }
-
-    // SSE Handshake (GET)
-    if (pathname === "/sse" && method === "GET") {
+    if (isSseHandshake) {
       const authHeader = request.headers.get("Authorization");
-      let apiKey = url.searchParams.get("key") || "";
+      let apiKey = request.headers.get("X-Xiaoflow-Api-Key") || url.searchParams.get("key") || "";
       
-      if (authHeader && authHeader.startsWith("Bearer ")) {
+      if (!apiKey && authHeader && authHeader.startsWith("Bearer ")) {
         apiKey = authHeader.substring(7);
       }
 
       if (!apiKey) {
-        return oauthErrorResponse("invalid_token", "Sign in with your XiaoFlow account to use MCP.");
+        return oauthErrorResponse("invalid_token", "Sign in with your XiaoFlow account to use MCP.", request);
       }
 
       const sessionId = this.ctx.id.toString();
       const externalBaseUrl = request.headers.get("X-External-Base-Url");
       const finalBaseUrl = externalBaseUrl || `${url.protocol}//${url.host}`;
 
-      console.log(`[DO ${sessionId}] Handling SSE Handshake for key: ${apiKey?.substring(0, 8)}...`);
+      console.log(`[DO ${sessionId}] Handling SSE Handshake for key: ${apiKey?.substring(0, 8)}... (Path: ${pathname})`);
 
       // 1. Initialize transport and server
       this.transport = new HonoSseTransport(sessionId);
@@ -238,7 +229,7 @@ export class McpSession extends DurableObject {
             controller.enqueue(encoder.encode(": ok\n\n"));
             console.log(`[DO ${sessionId}] SSE Stream established, ok sent`);
 
-            // Send endpoint event - Absolute URL is safer
+            // Send endpoint event - Absolute URL is safer. Clients can post to /messages, /sse, or /mcp with sessionId
             const messagesUrl = `${finalBaseUrl}/messages?sessionId=${sessionId}`;
             const endpointData = `event: endpoint\ndata: ${messagesUrl}\n\n`;
             controller.enqueue(encoder.encode(endpointData));
@@ -276,7 +267,7 @@ export class McpSession extends DurableObject {
       return new Response(stream, {
         headers: {
           ...corsHeaders,
-          "Content-Type": "text/event-stream",
+          "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-cache, no-transform",
           "X-Content-Type-Options": "nosniff",
           "Connection": "keep-alive",
@@ -285,25 +276,13 @@ export class McpSession extends DurableObject {
       });
     }
 
-    // Handle POST probes (Common in Streamable HTTP fallbacks like Cursor & Smithery)
-    if (pathname === "/sse" && method === "POST") {
-      return new Response(JSON.stringify({ 
-        status: "ok", 
-        message: "This server supports SSE. Please use GET /sse to initiate the stream.",
-        transport: "sse",
-        endpoint: "/sse"
-      }), { 
-        status: 200, 
-        headers: { 
-            ...corsHeaders, 
-            "Content-Type": "application/json",
-            "Allow": "GET, POST, OPTIONS"
-        } 
-      });
-    }
+    // 2. Message Input for active SSE session (POST /messages, or POST /sse?sessionId=..., or POST /mcp?sessionId=...)
+    const isSseMessageInput = (isMessages || (isMcp || isSse)) && method === "POST" && (
+      hasSessionHeader ||
+      (this.transport !== undefined && isMessages)
+    );
 
-    // Message Input
-    if (pathname === "/messages" && method === "POST") {
+    if (isSseMessageInput && (this.transport || isMessages)) {
       console.log(`[DO ${this.ctx.id}] Incoming message to /messages`);
       if (!this.transport || !this.server) {
         console.warn(`[DO ${this.ctx.id}] Message received but no active transport/server`);
@@ -325,6 +304,26 @@ export class McpSession extends DurableObject {
       } catch (e) {
         return new Response("Invalid JSON", { status: 400, headers: corsHeaders });
       }
+    }
+
+    // 3. Streamable HTTP transport: seamlessly handles BOTH /mcp AND /sse!
+    if (isMcp || isSse) {
+      const apiKey = request.headers.get("X-Xiaoflow-Api-Key") || extractAccessToken(request) || "";
+      const sessionKey = request.headers.get("Mcp-Session-Id") || request.headers.get("X-Mcp-Session-Id") || url.searchParams.get("sessionId") || this.ctx.id.toString() || apiKey;
+
+      const transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+      const server = this.createServerInstance(apiKey, sessionKey);
+      await server.connect(transport);
+
+      const reqHeaders = new Headers(request.headers);
+      reqHeaders.set("Accept", "application/json, text/event-stream");
+      const normalizedRequest = new Request(request, { headers: reqHeaders });
+
+      const response = await transport.handleRequest(normalizedRequest);
+      return withCors(response, request);
     }
 
     // Health Check / Diagnostics
@@ -850,7 +849,17 @@ function withCors(response: Response, request: Request): Response {
   });
 }
 
-function oauthErrorResponse(error = "invalid_token", description = "Authentication required."): Response {
+function oauthErrorResponse(error = "invalid_token", description = "Authentication required.", requestOrPath?: Request | string): Response {
+  let metadataUrl = PROTECTED_RESOURCE_METADATA;
+  if (requestOrPath) {
+    const p = typeof requestOrPath === "string" ? requestOrPath : new URL(requestOrPath.url).pathname;
+    if (p.includes("/sse")) {
+      metadataUrl = "https://mcp.xiaoflow.com/.well-known/oauth-protected-resource/sse";
+    } else if (p.includes("/mcp")) {
+      metadataUrl = "https://mcp.xiaoflow.com/.well-known/oauth-protected-resource/mcp";
+    }
+  }
+
   return new Response(JSON.stringify({
     error,
     error_description: description,
@@ -859,7 +868,7 @@ function oauthErrorResponse(error = "invalid_token", description = "Authenticati
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
-      "WWW-Authenticate": `Bearer resource_metadata="${PROTECTED_RESOURCE_METADATA}", scope="mcp", error="${error}"`,
+      "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}", scope="mcp", error="${error}"`,
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Expose-Headers": "WWW-Authenticate",
     },
@@ -883,12 +892,12 @@ function extractAccessToken(request: Request): string {
 async function requireUserToken(request: Request, env: Env): Promise<string | Response> {
   const token = extractAccessToken(request);
   if (!token) {
-    return oauthErrorResponse("invalid_token", "Sign in with your XiaoFlow account to use MCP.");
+    return oauthErrorResponse("invalid_token", "Sign in with your XiaoFlow account to use MCP.", request);
   }
   const apiBaseUrl = env.XIAOFLOW_API_URL || "https://api.xiaoflow.com";
   const isValid = await validateAccessToken(token, apiBaseUrl);
   if (!isValid) {
-    return oauthErrorResponse("invalid_token", "Access token is invalid or expired. Please sign in again.");
+    return oauthErrorResponse("invalid_token", "Access token is invalid or expired. Please sign in again.", request);
   }
   return token;
 }
@@ -1297,38 +1306,35 @@ export default {
             return new Response(null, { status: 204, headers: getCorsHeaders(request) });
         }
 
-        if (pathname === "/mcp" || (pathname === "/sse" && method === "GET")) {
+        const isMcp = pathname === "/mcp";
+        const isSse = pathname === "/sse";
+        const isMessages = pathname === "/messages";
+
+        // Fully unify both /mcp and /sse: both support Streamable HTTP and SSE transports
+        if (isMcp || isSse) {
             const auth = await requireUserToken(request, env);
             if (auth instanceof Response) {
                 return withCors(auth, request);
             }
 
-            if (pathname === "/mcp") {
-                const id = env.MCP_SESSION.newUniqueId();
-                const obj = env.MCP_SESSION.get(id);
-                const forwarded = new Request(request);
-                forwarded.headers.set("X-Xiaoflow-Api-Key", auth);
-                forwarded.headers.set("Authorization", `Bearer ${auth}`);
-                return obj.fetch(forwarded);
+            const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id") || request.headers.get("mcp-session-id");
+            let id;
+            if (sessionId) {
+                try { id = env.MCP_SESSION.idFromString(sessionId); } catch { id = env.MCP_SESSION.newUniqueId(); }
+            } else {
+                id = env.MCP_SESSION.newUniqueId();
             }
 
-            const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id");
-            let sseId;
-            if (sessionId) {
-                try { sseId = env.MCP_SESSION.idFromString(sessionId); } catch { sseId = env.MCP_SESSION.newUniqueId(); }
-            } else {
-                sseId = env.MCP_SESSION.newUniqueId();
-            }
-            const sseObj = env.MCP_SESSION.get(sseId);
-            const sseRequest = new Request(request);
-            sseRequest.headers.set("X-External-Base-Url", `${url.protocol}//${url.host}`);
-            sseRequest.headers.set("X-Xiaoflow-Api-Key", auth);
-            sseRequest.headers.set("Authorization", `Bearer ${auth}`);
-            return sseObj.fetch(sseRequest);
+            const obj = env.MCP_SESSION.get(id);
+            const forwarded = new Request(request);
+            forwarded.headers.set("X-External-Base-Url", `${url.protocol}//${url.host}`);
+            forwarded.headers.set("X-Xiaoflow-Api-Key", auth);
+            forwarded.headers.set("Authorization", `Bearer ${auth}`);
+            return obj.fetch(forwarded);
         }
 
-        if (pathname === "/sse" || pathname === "/messages") {
-            const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id");
+        if (isMessages) {
+            const sessionId = url.searchParams.get("sessionId") || request.headers.get("x-mcp-session-id") || request.headers.get("mcp-session-id");
             let id;
             if (sessionId) {
                 try { id = env.MCP_SESSION.idFromString(sessionId); } catch { id = env.MCP_SESSION.newUniqueId(); }
